@@ -11,6 +11,9 @@ const USAGE = `sdig — archéologie de sessions opencode
 
 Usage:
   sdig <requête> [filtres]     recherche (commande par défaut)
+  sdig read <session> [--around <msgId>] [--ctx N] [--tail N]
+                                dérouler une session autour d'un message
+  sdig raw <partId>            afficher une sortie d'outil brute (preuve)
   sdig ingest [--db P] [--rebuild]   source → corpus (incrémental par défaut)
   sdig index                          corpus → index BM25 (rebuild complet)
   sdig refresh                        ingest + index
@@ -25,6 +28,8 @@ Filtres de recherche :
   --role R       user | assistant
   --agent A      agent exact (build, plan...)
   --limit N      défaut 20
+  --ctx N        affiche N messages voisins autour de chaque hit (lecture du contexte)
+  --raw          cherche aussi dans les sorties brutes (stderr inclus)
   --json         sortie JSON (script/tests)
   --plain        highlight sans ANSI
 
@@ -40,14 +45,14 @@ function fail (msg, code = 1) {
 function parseArgs (argv) {
   const positional = []
   const flags = {}
-  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild'])
+  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'head'])
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--help' || a === '-h') { flags.help = true; continue }
     if (a.startsWith('--')) {
       const k = a.slice(2)
       if (!known.has(k)) fail(`option inconnue : ${a}\n\n${USAGE}`)
-      if (k === 'json' || k === 'plain' || k === 'rebuild') { flags[k] = true; continue }
+      if (k === 'json' || k === 'plain' || k === 'rebuild' || k === 'raw') { flags[k] = true; continue }
       const v = argv[++i]
       if (v == null) fail(`option ${a} : valeur manquante`)
       flags[k] = v
@@ -61,7 +66,7 @@ async function main () {
   if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { console.log(USAGE); return }
 
   const sub = argv[0]
-  const isSub = ['ingest', 'index', 'refresh', 'status'].includes(sub)
+  const isSub = ['ingest', 'index', 'refresh', 'status', 'read', 'raw'].includes(sub)
   const { positional, flags } = parseArgs(isSub ? argv.slice(1) : argv)
 
   if (flags.home) process.env.SESSION_DIG_HOME = flags.home
@@ -104,6 +109,37 @@ async function main () {
     return
   }
 
+  if (isSub && sub === 'read') {
+    const sessionId = positional[0]
+    if (!sessionId) fail('usage : sdig read <session> [--around <msgId>] [--ctx N] [--tail N]')
+    const { sessionSlice } = await import('../src/read.js')
+    const { renderRead } = await import('../src/format.js')
+    const slice = sessionSlice(paths.root, sessionId, {
+      aroundId: flags.around,
+      ctx: flags.ctx ? parseInt(flags.ctx, 10) : 10,
+      tail: flags.tail ? parseInt(flags.tail, 10) : undefined
+    })
+    if (!slice) fail(`session inconnue : ${sessionId} (préfixe accepté dans sdig --session, pas ici — id complet requis)`)
+    console.log(renderRead(slice, sessionId))
+    return
+  }
+
+  if (isSub && sub === 'raw') {
+    const partId = positional[0]
+    if (!partId) fail('usage : sdig raw <partId> (id de part, cf. rawRef dans les résultats)')
+    const file = `${paths.raw}/${partId}.txt`
+    if (!fs.existsSync(file)) fail(`sortie brute introuvable : ${file}`)
+    const content = fs.readFileSync(file, 'utf8')
+    if (flags.head) {
+      const n = parseInt(flags.head, 10)
+      if (!Number.isFinite(n) || n < 1) fail('--head : nombre invalide')
+      console.log(content.split('\n').slice(0, n).join('\n'))
+    } else {
+      console.log(content)
+    }
+    return
+  }
+
   // ── recherche (défaut) ──
   const q = positional.join(' ')
   if (!q) fail('requête manquante\n\n' + USAGE)
@@ -121,9 +157,27 @@ async function main () {
     limit, plain: flags.plain || flags.json
   })
   if (flags.json) { console.log(renderJson(hits)); return }
-  if (!hits.length) { console.log('aucun résultat'); return }
-  const { sessionsById } = loadCorpus(paths.root)
-  console.log(renderTerminal(hits, sessionsById))
+  if (!hits.length && !flags.raw) { console.log('aucun résultat'); return }
+  const { sessionsById, events } = loadCorpus(paths.root)
+  if (hits.length) {
+    let ctxEvents = null
+    if (flags.ctx) {
+      const n = parseInt(flags.ctx, 10)
+      if (!Number.isFinite(n) || n < 0) fail('--ctx : nombre invalide')
+      const { eventsBySession } = await import('../src/read.js')
+      ctxEvents = eventsBySession(events)
+      console.log(renderTerminal(hits, sessionsById, { ctx: n, eventsBySession: ctxEvents, plain: flags.plain }))
+    } else {
+      console.log(renderTerminal(hits, sessionsById, { plain: flags.plain }))
+    }
+  }
+  if (flags.raw) {
+    const { rawScan } = await import('../src/raw.js')
+    const { renderRawHits } = await import('../src/format.js')
+    const matches = rawScan(paths.root, q, { limit: 10 })
+    if (matches.length) console.log(renderRawHits(matches))
+    else if (!hits.length) console.log('aucun résultat (ni index, ni sorties brutes)')
+  }
 }
 
 main().catch(e => fail(e.message))

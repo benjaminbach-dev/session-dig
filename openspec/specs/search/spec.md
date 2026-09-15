@@ -77,5 +77,37 @@ Le design SHALL documenter la fusion par reciprocal rank fusion (RRF) des listes
 
 #### Scenario: Arrivée du second retriever
 
-- **WHEN** le retriever embeddings est activé en v1
-- **THEN** le CLI et le format de sortie restent inchangés, seuls le configuration et les tests gagnent une entrée.
+- **WHEN** le retriever embeddings est activé en v1, après constat d'écart lexical répété dans l'évaluation (décision du 16/09 : l'évaluation arbitre avant tout travail dessus)
+- **THEN** le CLI et le format de sortie restent inchangés, seuls la configuration et les tests gagnent une entrée.
+
+### Requirement: Lecture du contexte et accès à la preuve
+
+Décision du 16/09 (retour d'agent) : retrouver un extrait n'est pas retrouver la solution — le message trouvé peut contenir une hypothèse abandonnée. Le CLI SHALL permettre, après une recherche : de lire les messages voisins d'un hit (`--ctx N` sur la recherche ; `sdig read <session> --around <msgId> [--ctx N] [--tail N]` pour dérouler une session), et de consulter la sortie d'outil brute associée à un appel (`sdig raw <partId>`, référencé par `rawRef` dans les résultats). Les voisins SHALL être rendus en ordre chronologique, les hits marqués, et les fenêtres de voisins de hits proches SHALL être fusionnées pour éviter les doublons d'affichage.
+
+#### Scenario: Hypothèse abandonnée
+
+- **WHEN** un hit est une hypothèse corrigée plus loin dans la session
+- **THEN** `--ctx` ou `sdig read --around` montre les messages suivants qui infirment ou confirment, sans quitter la recherche.
+
+#### Scenario: Preuve en sortie brute
+
+- **WHEN** un toolCall affiche un `rawRef`
+- **THEN** `sdig raw <partId>` restitue la sortie complète enregistrée dans `raw/`.
+
+### Requirement: Recherche brute optionnelle
+
+Les sorties d'outils restent exclues de l'index BM25 par défaut (décision du 15/09 : signal contre bruit). Le CLI SHALL offrir une recherche optionnelle par sous-chaîne dans `raw/` (`--raw`), car une erreur précise n'apparaît parfois que dans stderr. Cette recherche SHALL resituer chaque match (session, date, outil, commande) et rester bornée en résultats.
+
+#### Scenario: Erreur uniquement en stderr
+
+- **WHEN** une requête avec `--raw` vise un message d'erreur absent des textes indexés
+- **THEN** le match dans la sortie brute est listé avec sa session et sa commande, sans avoir été ajouté à l'index BM25.
+
+### Requirement: Évaluation sur recherches réelles
+
+Décision du 16/09 (retour d'agent) : la pertinence se mesure sur des questions d'usage, pas seulement sur idempotence, contrats et performance. Le dépôt SHALL embarquer un harnais d'évaluation (`eval/queries.json` + runner `npm run eval`) et viser une vingtaine de questions issues de l'usage réel, chacune avec la session attendue. Les échecs SHALL être documentés comme écarts lexicaux connus plutôt que corrigés par retouches de scoring ; un manque répété est le signal qui arbitre l'activation des embeddings, avant tout travail dessus.
+
+#### Scenario: Écart lexical documenté
+
+- **WHEN** une question d'usage échoue en top-1 de façon répétée
+- **THEN** l'échec est consigné dans le harnais comme écart connu et alimente la décision d'activer le retriever embeddings.

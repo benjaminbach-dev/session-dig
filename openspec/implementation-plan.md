@@ -34,18 +34,29 @@
 - `--plain` n'ôte les ANSI que des snippets (en-têtes de session restent gras) — cosmétique.
 - `sdig` non encore installé en commande native (symlink /usr/local/bin/sdig à décider).
 
-## Phase v1 — hybride
+## Phase v0.1 — lecture du contexte et preuve — **IMPLÉMENTÉE le 16/09** (retour d'agent)
 
-- Retriever embeddings (chunk au message, modèle local ou API via proxy ccp) derrière la même interface.
-- Fusion RRF des listes de hits (documentée en spec `search`).
-- Expansion de requête LLM (decorator de Query, modèle cheap via ccp-proxy).
+1. ✅ `sdig read <session> --around <msgId> [--ctx N] [--tail N]` : dérouler une session autour d'un hit (fenêtres fusionnées, hit marqué ►, index positionnels).
+2. ✅ `--ctx N` sur la recherche : voisins ±N rendus en place, chronologiques, hits marqués, fenêtres fusionnées (pas de doublon).
+3. ✅ `sdig raw <partId>` : preuve — sortie d'outil complète depuis `raw/` ; `rawRef` affiché sur chaque toolCall.
+4. ✅ `--raw` : recherche sous-chaîne optionnelle dans `raw/` (stderr inclus), resituée (session, date, outil, cmd) — les sorties restent hors index BM25.
+5. ✅ Tests +6 (mergeWindows, slice/around/tail, ctx rendu, fusion sans doublon, rawScan erreur stderr) → **29/29**.
 
-## Phase v2 — sstats
+## Phase v0.2 — évaluation sur recherches réelles — **HARNAIS PRÊT, questions à alimenter**
 
-- Comparaison de modèles sur usage réel : coût moyen par problème résolu, taux d'échec de commandes par modèle (`exitCode`), tokens/cache par tâche. Jointure avec les données quota-cli possible.
-- Nouvelle spec `stats` à écrire avant implémentation (SDD).
+- ✅ `eval/queries.json` + `npm run eval` : top1/top3/top5, échecs documentés (`knownMiss`), exit 1 si miss non documenté.
+- ⏳ **À faire par l'utilisateur** : ~15-20 questions d'usage réel (« je cherchais cette décision-là ») avec la session attendue. Les 5 seeds actuels sont des garde-fous de régression (titres vérifiés) ; 1 écart lexical déjà documenté (« rédiger specs console kirby » confondu avec « Affiner les specs Kirby et Pi » — candidat embeddings).
+- Règle : on ne retouche pas le scoring à la main pour faire passer une question ; un manque répété arbitre les embeddings.
 
-## Phase v3 — service MCP
+## Phase v1 — petit serveur MCP lecture seule (remonté, ex-v3 — retour d'agent)
 
-- Exposition du dig en serveur MCP (pattern agora-scout) : les agents opencode et Agora interrogent l'historique eux-mêmes.
-- Bornes de taille de résultat et politique de confidentialité à spécifier à ce moment-là.
+- Exposer dig/read/raw en MCP (pattern agora-scout) : les agents opencode et Agora creusent l'historique eux-mêmes.
+- Lecture seule, bornes de taille de résultat, politique de confidentialité à spécifier avant implémentation (SDD : nouvelle spec `mcp`).
+
+## Phase v2 — embeddings + RRF — **conditionnés par l'évaluation**
+
+- Retriever embeddings (chunk au message, modèle local ou API via proxy ccp) derrière la même interface + fusion RRF — seulement si l'éval v0.2 montre un manque lexical répété et documenté.
+
+## Phase v3 — sstats — axe distinct (retour d'agent : l'exitCode n'est PAS une mesure de qualité)
+
+- Comparaison de modèles sur usage réel : coût par problème résolu, tokens/cache par tâche, **exitCode traité comme signal d'exécution brut** (un échec peut être un diagnostic pertinent — jamais interprété seul comme « mauvais modèle »). Jointure quota-cli possible. Nouvelle spec `stats` à écrire avant implémentation.

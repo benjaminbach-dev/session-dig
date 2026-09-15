@@ -25,9 +25,13 @@ zsh, git (v1+)    raw/ (outputs)        └─ fusion RRF ─┘     --json
 npm install          # better-sqlite3 (prebuild)
 sdig refresh         # ingest incrémental + index  (ou : node bin/sdig.js refresh)
 sdig "bug proxy 461" --repo ccp-proxy --after 2026-06
-sdig "git revert"    # les commandes de toolCalls sont cherchables
+sdig "bug proxy 461" --ctx 2        # + les messages voisins (hypothèse abandonnée ?)
+sdig read <session> --around <msgId>  # dérouler la session autour du hit
+sdig raw <partId>                    # la sortie d'outil complète (preuve)
+sdig "connection refused" --raw     # chercher aussi dans les sorties brutes (stderr)
 sdig status          # état corpus / index
-npm test             # 23 tests (dorées, contrat retriever, idempotence)
+npm test             # 29 tests (dorées, contrat retriever, contexte, raw, idempotence)
+npm run eval         # pertinence sur questions réelles (top1/top3/top5)
 npm run bench        # 5k events : index 190 ms, requête < 11 ms
 ```
 
@@ -35,11 +39,13 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 
 ## Roadmap
 
-| Phase | Contenu |
-|-------|---------|
-| v0 | adaptateur opencode + corpus + retriever FTS5 + CLI `sdig` |
-| v1 | retriever embeddings + fusion RRF + expansion de requête LLM |
-| v2 | `sstats` : comparaison de modèles (coût, fiabilité exitCode, tokens) sur usage réel |
-| v3 | serveur MCP : les agents creusent l'historique eux-mêmes |
+| Phase | Contenu | Statut |
+|-------|---------|--------|
+| v0 | adaptateur opencode + corpus + retriever FTS5 + CLI `sdig` | ✅ fait |
+| v0.1 | **retrouver la décision et ses preuves** : `read`/`--ctx` (contexte), `raw` (preuve), `--raw` (stderr) | ✅ fait |
+| v0.2 | évaluation sur recherches réelles (`npm run eval`) — ~20 questions d'usage à alimenter | ⏳ harnais prêt |
+| v1 | petit serveur MCP lecture seule : les agents creusent l'historique eux-mêmes | à venir |
+| v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
+| v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |
 
 Corpus local uniquement — jamais publié, jamais transmis (fixtures synthétiques pour les tests).

@@ -1,0 +1,28 @@
+[
+  {
+    "q": "erreur installation proot debian openchamber",
+    "expect": ["ses_0150610d0ffe6S97cE368ypcGy"],
+    "note": "seed (titre exact : « Openchamber: erreur d'installation proot Debian »)"
+  },
+  {
+    "q": "localiser configuration globale openchamber",
+    "expect": ["ses_0000181d5ffeEuw4vQ6KL3uI9v", "ses_0000164baffe5eyVK7Kd7YMyJO"],
+    "note": "seed (parent + subagent @explore tous deux valides)"
+  },
+  {
+    "q": "connexion github clé ssh debian proot",
+    "expect": ["ses_00a43ee25ffe7X3kqyxjGQ0QIA"],
+    "note": "seed (titre exact)"
+  },
+  {
+    "q": "rédiger specs console kirby",
+    "expect": ["ses_00940151bffeb473aUPC902c8w"],
+    "knownMiss": true,
+    "note": "seed (titre exact, subagent @general) — BM25 ne distingue pas « rédiger specs console » de la session voisine « Affiner les specs Kirby et Pi » : écart lexical documenté, candidat embeddings"
+  },
+  {
+    "q": "setup termux debian",
+    "expect": ["ses_2f29abf37ffeRxpZ9YpVujFhA3"],
+    "note": "seed (première session, titre « setup termux / debian »)"
+  }
+]
