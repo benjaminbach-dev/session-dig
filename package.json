@@ -8,7 +8,14 @@
   "bin": {
     "sdig": "./bin/sdig.js"
   },
+  "scripts": {
+    "test": "node --test 'test/*.test.js'",
+    "bench": "node scripts/bench.js"
+  },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
   }
 }

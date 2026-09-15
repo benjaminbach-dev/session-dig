@@ -19,10 +19,19 @@ zsh, git (v1+)    raw/ (outputs)        └─ fusion RRF ─┘     --json
 
 ## Statut
 
-**SDD — specs écrites avant le code** (workflow OpenSpec). Voir `openspec/specs/` :
+**v0 implémentée le 16/09** (SDD : specs écrites avant le code, puis patchées aux points constatés à l'implémentation). Specs : `openspec/specs/` — [`corpus`](openspec/specs/corpus/spec.md), [`search`](openspec/specs/search/spec.md) · Plan détaillé : [`openspec/implementation-plan.md`](openspec/implementation-plan.md).
 
-- [`corpus`](openspec/specs/corpus/spec.md) — schéma canonique v1, adaptateur opencode, ingestion incrémentale
-- [`search`](openspec/specs/search/spec.md) — retriever BM25, CLI `sdig`, requêtes dorées
+```bash
+npm install          # better-sqlite3 (prebuild)
+sdig refresh         # ingest incrémental + index  (ou : node bin/sdig.js refresh)
+sdig "bug proxy 461" --repo ccp-proxy --after 2026-06
+sdig "git revert"    # les commandes de toolCalls sont cherchables
+sdig status          # état corpus / index
+npm test             # 23 tests (dorées, contrat retriever, idempotence)
+npm run bench        # 5k events : index 190 ms, requête < 11 ms
+```
+
+Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home` ou `SESSION_DIG_HOME`) ; base source : `~/.local/share/opencode/opencode.db` en lecture seule (`--db` / `SESSION_DIG_DB`).
 
 ## Roadmap
 

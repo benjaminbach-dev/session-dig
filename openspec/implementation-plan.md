@@ -11,13 +11,28 @@
 5. **CLI nommé `sdig`** — `dig` est déjà le binaire DNS ; même logique que `quota` (commande native, symlink `/usr/local/bin`).
 6. **Embeddings non exclus** : le projet n'est pas contraint au contexte proot/Termux ; le retriever BM25 est le maillon v0, pas une limite. L'interface `Retriever` est le contrat commun.
 
-## Phase v0 — le prototype
+## Phase v0 — le prototype — **IMPLÉMENTÉE le 16/09**
 
-1. **Adaptateur opencode** (Node, `better-sqlite3`, ouverture `mode=ro`) : sessions + messages + parts → `sessions.jsonl`, `events.jsonl`, `raw/`. Watermark `time_updated`, ingestion incrémentale, rebuild idempotent.
-   - Source réelle vérifiée le 15/09 : `~/.local/share/opencode/opencode.db` (SQLite drizzle ; tables `session` 233, `message` 4 983, `part` 20 274 ; métriques tokens/cost dans les parts `step-finish` ; `session.directory` donne le repo).
-2. **Retriever bm25** : base SQLite séparée, FTS5, colonnes filtrables (repo, session, ts, model, role, agent) ; texte user/assistant + `toolCall.cmd` indexés ; outputs jamais.
-3. **CLI `sdig`** : mots-clés + filtres, sortie groupée par session avec highlight, `--json`, `--limit`.
-4. **Tests** : corpus fixture synthétique commité + requêtes dorées (définition dans `specs/search`) + suite contractuelle retriever + idempotence + test de perf (~5 000 messages, cible < 100 ms/requête).
+1. ✅ **Adaptateur opencode** (`src/adapter/opencode.js`) : ouverture `readonly` (+ repli copie tmp si WAL verrouillé), sessions/messages/parts → corpus. Watermark `time_updated`, incrémental + `--rebuild` (raw/ purgé et régénéré). Vérifié sur données réelles : 4 983 events / 233 sessions / 5 204 raw (~4,1 Mo) en 7,3 s ; idempotence octet par octet ; rebuild identique.
+2. ✅ **Retriever bm25** (`src/retriever/bm25.js`) : index.db FTS5 (external content), colonnes filtrables, cmd indexée, outputs exclus. Rebuild complet à chaque `sdig index` (index jetable, trio db/wal/shm supprimé).
+3. ✅ **CLI `sdig`** (`bin/sdig.js`) : `ingest` / `index` / `refresh` / `status` / recherche par défaut ; filtres --repo --session --after --before --model --role --agent --limit ; `--json`, `--plain`.
+4. ✅ **Tests** (`node --test`) : 23 pass — fixture synthétique (base opencode-like minimaliste), requêtes dorées (proxy 461 → ses_fix1, cmd git revert via toolCalls), contrat retriever (retrouvabilité, idempotence, index jetable, ordre par rang), idempotence ingestion, incrémental (message modifié/nouveau), rebuild, base absente.
+5. ✅ **Bench** (`npm run bench`) : 5 000 events synthétiques → indexation 190 ms, pire requête 10,9 ms (cible spec < 100 ms : marge ×9).
+
+### Décisions d'implémentation consignées (16/09)
+- **`toolCalls` = liste** (jusqu'à 34 appels/message en réel — spec patchée) ; `rawRef` = id de part, sortie dans `raw/<id>.txt`.
+- **Parts ignorées en v0** : `reasoning`, `patch`, `snapshot`, `step-start`, `compaction`, `agent`, `file` (spec patchée ; récupérables plus tard via rebuild).
+- **tokens/cost** : depuis `message.data` si présents, sinon somme des `step-finish` (les deux formes existent en réel).
+- **exitCode** : chaîne best-effort `state.metadata.exitCode` → `state.exitCode` → `state.error.exitCode` (et variantes snake_case) ; omis sinon.
+- **cmd non-bash** : champ le plus parlant de `state.input` (`command`, puis query/pattern/url/file/…, sinon JSON compact tronqué 200).
+- **Requête FTS** : AND strict, repli OR si 0 hit (« bug proxy 461 » ne doit pas répondre vide quand les termes sont dispersés).
+- **repo null** pour directory = home ou `/` (sessions globales).
+- **watermark** = max `time_updated` lu ; une vraie mise à jour opencode bump `time_updated` → toujours relu (test fixture le vérifie avec un timestamp réel, pas un delta).
+
+### Limites connues v0
+- Ingestion recharge toutes les parts à chaque passe (20 k lignes ≈ 1 s — optimisation par-ples que si le corpus dépasse ~100 k messages).
+- `--plain` n'ôte les ANSI que des snippets (en-têtes de session restent gras) — cosmétique.
+- `sdig` non encore installé en commande native (symlink /usr/local/bin/sdig à décider).
 
 ## Phase v1 — hybride
 
