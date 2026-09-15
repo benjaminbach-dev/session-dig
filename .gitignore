@@ -1,0 +1,19 @@
+# Corpus et données locales — jamais committés
+corpus/
+raw/
+*.db
+*.db-shm
+*.db-wal
+.session-dig/
+
+# Node
+node_modules/
+dist/
+
+# Env et secrets
+.env
+.env.*
+
+# Divers
+*.log
+.DS_Store

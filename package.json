@@ -1,0 +1,14 @@
+{
+  "name": "session-dig",
+  "version": "0.0.0",
+  "description": "Archéologie de sessions AI : corpus JSONL canonique multi-sources + recherche BM25 (FTS5), extensible vers embeddings et stats de modèles.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "sdig": "./bin/sdig.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
