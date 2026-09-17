@@ -42,11 +42,15 @@
 4. ✅ `--raw` : recherche sous-chaîne optionnelle dans `raw/` (stderr inclus), resituée (session, date, outil, cmd) — les sorties restent hors index BM25.
 5. ✅ Tests +6 (mergeWindows, slice/around/tail, ctx rendu, fusion sans doublon, rawScan erreur stderr) → **29/29**.
 
-## Phase v0.2 — évaluation sur recherches réelles — **HARNAIS PRÊT, questions à alimenter**
+## Phase v0.2 — évaluation sur recherches réelles — **FAITE le 17/09 (26 questions auto)**
 
-- ✅ `eval/queries.json` + `npm run eval` : top1/top3/top5, échecs documentés (`knownMiss`), exit 1 si miss non documenté.
-- ⏳ **À faire par l'utilisateur** : ~15-20 questions d'usage réel (« je cherchais cette décision-là ») avec la session attendue. Les 5 seeds actuels sont des garde-fous de régression (titres vérifiés) ; 1 écart lexical déjà documenté (« rédiger specs console kirby » confondu avec « Affiner les specs Kirby et Pi » — candidat embeddings).
-- Règle : on ne retouche pas le scoring à la main pour faire passer une question ; un manque répété arbitre les embeddings.
+- ✅ `eval/queries.json` (26 questions : 5 seeds + 21 auto dérivées des sessions réelles, provenance notée) + `npm run eval` : top1/top3/top5, `knownMiss` (écart documenté), exit 1 si miss non documenté.
+- ✅ **Résultat : top1 26/26 · top3 26/26 · top5 26/26** — après trois améliorations *motivées par l'éval* (pas des retouches ad hoc) :
+  1. **Indexation des titres de session** (ligne synthétique `role: title` par session) — corrigeait « mécanisme compaction » (titre portait tout le vocabulaire) et « rédiger specs console kirby ».
+  2. **Stopwords fr+en retirés des requêtes** — « comment marche la compaction » perdait contre des sessions saturées d'« opencode ».
+  3. **OR pondéré BM25 au lieu d'AND-strict-avec-repli** — l'AND faisait gagner un dump de config « fourre-tout » (contenait tous les termes) contre la vraie réponse. Plus jetons pointés (`chutes.ai`) → phrases FTS5.
+- 4 vérités terrain clarifiées (sessions légitimes trouvées ajoutées à `expect`, notes explicatives) : sous-agent recherche Chutes.ai, session police Lilex/Termux, session test ctx_search, sous-agent specs plugin ai agent.
+- ⚠ **Réserve honnête** : ces questions sont auto-dérivées (vocabulaire souvent proche des titres) — biais favorable. Les questions **utilisateur** (« je cherchais cette décision-là ») restent la vraie mesure : les ajouter dans `eval/queries.json` remplacera progressivement les auto, et leurs échecs éventuels documenteront le cas embeddings (v2) bien mieux que les miens.
 
 ## Phase v1 — petit serveur MCP lecture seule (remonté, ex-v3 — retour d'agent)
 

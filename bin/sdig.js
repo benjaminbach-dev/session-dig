@@ -159,6 +159,7 @@ async function main () {
   if (flags.json) { console.log(renderJson(hits)); return }
   if (!hits.length && !flags.raw) { console.log('aucun résultat'); return }
   const { sessionsById, events } = loadCorpus(paths.root)
+  const prettify = hits.map(h => ({ ...h, role: h.role === 'title' ? 'titre' : h.role }))
   if (hits.length) {
     let ctxEvents = null
     if (flags.ctx) {
@@ -166,9 +167,9 @@ async function main () {
       if (!Number.isFinite(n) || n < 0) fail('--ctx : nombre invalide')
       const { eventsBySession } = await import('../src/read.js')
       ctxEvents = eventsBySession(events)
-      console.log(renderTerminal(hits, sessionsById, { ctx: n, eventsBySession: ctxEvents, plain: flags.plain }))
+      console.log(renderTerminal(prettify, sessionsById, { ctx: n, eventsBySession: ctxEvents, plain: flags.plain }))
     } else {
-      console.log(renderTerminal(hits, sessionsById, { plain: flags.plain }))
+      console.log(renderTerminal(prettify, sessionsById, { plain: flags.plain }))
     }
   }
   if (flags.raw) {

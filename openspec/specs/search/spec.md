@@ -22,7 +22,24 @@ Tout retriever SHALL implémenter une interface unique : `name`, `index(events)`
 
 ### Requirement: Index FTS5 BM25
 
-Le retriever `bm25` SHALL utiliser une base SQLite distincte du corpus via `better-sqlite3`, avec une table FTS5 en tokenizer unicode par défaut. Par défaut, l'index SHALL indexer le texte des messages `user` et `assistant` ET les commandes du champ `toolCall.cmd`, mais PAS les sorties d'outils (décision du 15/09 : les sorties volumineuses sont du bruit BM25 ; la ligne de commande est du signal pur). Les filtres structurés (`repo`, `session`, `ts`, `model`, `role`, `agent`) SHALL être des colonnes filtrables de l'index, pas des termes de requête.
+Le retriever `bm25` SHALL utiliser une base SQLite distincte du corpus via `better-sqlite3`, avec une table FTS5 en tokenizer unicode par défaut. Par défaut, l'index SHALL indexer le texte des messages `user` et `assistant` ET les commandes du champ `toolCalls[].cmd`, mais PAS les sorties d'outils (décision du 15/09 : les sorties volumineuses sont du bruit BM25 ; la ligne de commande est du signal pur). L'index SHALL également indexer le titre de chaque session : une ligne synthétique par session (id = id de session, `role: title` — décision du 17/09 motivée par l'évaluation, les titres générés par la source étant des résumés à fort signal de rappel). Les filtres structurés (`repo`, `session`, `ts`, `model`, `role`, `agent`) SHALL être des colonnes filtrables de l'index, pas des termes de requête.
+
+Décisions du 17/09 (motivées par l'évaluation sur questions réelles) : les requêtes SHALL retirer une liste compacte de stopwords fr+en ; les jetons contenant un point (ex. `chutes.ai`) SHALL être traités comme des phrases FTS5 (tokens adjacents) ; la combinaison de termes SHALL être une disjonction pondérée BM25 (OR) — l'AND strict laissait gagner des messages « fourre-tout » contenant tous les termes (dump de configuration) contre la réponse attendue, tandis qu'en disjonction un événement matchant tous les termes cumule ses poids et sort naturellement en tête.
+
+#### Scenario: Bruit évité
+
+- **WHEN** une requête cible un sujet technique
+- **THEN** les hits proviennent des textes de messages et des commandes exécutées, jamais des sorties d'outils volumineuses.
+
+#### Scenario: Titre comme signal de rappel
+
+- **WHEN** le vocabulaire discriminant d'une session vit surtout dans son titre (ex. « Mécanisme compaction opencode »)
+- **THEN** la ligne `title` matche et fait remonter la session, même si aucun message ne contient tous les termes de la requête.
+
+#### Scenario: Message fourre-tout
+
+- **WHEN** un long message de configuration contient tous les termes de la requête sans être la réponse attendue
+- **THEN** la disjonction pondérée par IDF privilégie l'événement portant le terme rare, sans recours à un AND strict.
 
 #### Scenario: Bruit évité
 

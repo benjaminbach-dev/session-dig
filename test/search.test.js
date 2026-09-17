@@ -96,3 +96,18 @@ test('sorties d\'outils brutes non indexées (spec : pas de bruit BM25)', () => 
 test('requête sans termes exploitables → erreur', () => {
   assert.throws(() => search(indexPath, { q: '!!!', limit: 10 }), /vide/)
 })
+
+test('titres de sessions indexés (rôle title) — terme présent seulement dans un titre', () => {
+  const hits = search(indexPath, { q: 'sous-agent', limit: 10, plain: true })
+  assert.ok(hits.some(h => h.id === 'ses_fix3' && h.role === 'title'))
+})
+
+test('stopwords retirés : requête en stopwords seuls → erreur explicite', () => {
+  assert.throws(() => search(indexPath, { q: 'comment la the of', limit: 10 }), /vide/)
+})
+
+test('jeton pointé → phrase FTS5 (marque / domaine, discrimination)', () => {
+  // « chutes.ai » doit matcher le texte « inspirée de chutes.ai » (tokens adjacents)
+  const hits = search(indexPath, { q: 'chutes.ai', limit: 10, plain: true })
+  assert.ok(hits.some(h => h.id === 'msg_u2'))
+})

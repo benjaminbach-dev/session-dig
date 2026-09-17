@@ -1,28 +1,194 @@
 [
   {
     "q": "erreur installation proot debian openchamber",
-    "expect": ["ses_0150610d0ffe6S97cE368ypcGy"],
+    "expect": [
+      "ses_0150610d0ffe6S97cE368ypcGy"
+    ],
     "note": "seed (titre exact : « Openchamber: erreur d'installation proot Debian »)"
   },
   {
     "q": "localiser configuration globale openchamber",
-    "expect": ["ses_0000181d5ffeEuw4vQ6KL3uI9v", "ses_0000164baffe5eyVK7Kd7YMyJO"],
+    "expect": [
+      "ses_0000181d5ffeEuw4vQ6KL3uI9v",
+      "ses_0000164baffe5eyVK7Kd7YMyJO"
+    ],
     "note": "seed (parent + subagent @explore tous deux valides)"
   },
   {
     "q": "connexion github clé ssh debian proot",
-    "expect": ["ses_00a43ee25ffe7X3kqyxjGQ0QIA"],
+    "expect": [
+      "ses_00a43ee25ffe7X3kqyxjGQ0QIA"
+    ],
     "note": "seed (titre exact)"
   },
   {
     "q": "rédiger specs console kirby",
-    "expect": ["ses_00940151bffeb473aUPC902c8w"],
-    "knownMiss": true,
-    "note": "seed (titre exact, subagent @general) — BM25 ne distingue pas « rédiger specs console » de la session voisine « Affiner les specs Kirby et Pi » : écart lexical documenté, candidat embeddings"
+    "expect": [
+      "ses_00940151bffeb473aUPC902c8w"
+    ],
+    "note": "seed — résolu le 17/09 par l indexation des titres (le titre exact « Rédiger specs console Kirby » remporte maintenant le AND)"
   },
   {
     "q": "setup termux debian",
-    "expect": ["ses_2f29abf37ffeRxpZ9YpVujFhA3"],
-    "note": "seed (première session, titre « setup termux / debian »)"
+    "expect": [
+      "ses_2f29abf37ffeRxpZ9YpVujFhA3",
+      "ses_fa892748dffebr1LxpR4AX5LIE"
+    ],
+    "note": "seed (mars : première session « setup termux / debian » ; août : « Termux proot Debian setup » — les deux sont de bonnes réponses)"
+  },
+  {
+    "q": "télécharger musique youtube yt-dlp exif agent",
+    "expect": [
+      "ses_2ddd37affffe8LT5ldSzh9TKFQ",
+      "ses_2ddbde041ffeNxUA1XxXgojUO6"
+    ],
+    "note": "auto 17/09 — plusieurs sessions Music sur yt-dlp/ffmpeg/EXIF, la principale est « Gestion de musique: agent de téléchargement et EXIF »"
+  },
+  {
+    "q": "outils plus rapides que grep ls read cat pour agents termux",
+    "expect": [
+      "ses_2d6cc7029ffeVrpQ2I7Ibj2n23"
+    ],
+    "note": "auto 17/09 (titre « Termux: faster tools than grep/ls/read/cat for agents »)"
+  },
+  {
+    "q": "automatisation email sur termux",
+    "expect": [
+      "ses_29106c93fffekCiU3LNM3E7QoB"
+    ],
+    "note": "auto 17/09 (titre « Email automation on Termux »)"
+  },
+  {
+    "q": "générer une appli android pour mon téléphone",
+    "expect": [
+      "ses_28beec1bbffeqBVGT1ra62AzLO"
+    ],
+    "note": "auto 17/09 — reformulé volontairement sans les mots du titre (« APK production for personal phone installation ») : test de rappel hors vocabulaire du titre"
+  },
+  {
+    "q": "avantages des git worktrees",
+    "expect": [
+      "ses_286a1872bffezD7CUmxPWOIvx1"
+    ],
+    "note": "auto 17/09 (titre « Git worktrees: benefits and use cases »)"
+  },
+  {
+    "q": "ollama plans gratuits ou payants",
+    "expect": [
+      "ses_243f8faebffeNn7giLQsEMHwZk"
+    ],
+    "note": "auto 17/09 — reformulé (« Politique plans free et pro Ollama »)"
+  },
+  {
+    "q": "config lando kirby vite",
+    "expect": [
+      "ses_2396faad4ffepsswBQ8oMqfMCw",
+      "ses_23662c1deffeOh1IayyQNQ3a8X"
+    ],
+    "note": "auto 17/09 — deux sessions Lando Kirby + Vite (avril), toutes deux valides"
+  },
+  {
+    "q": "comment marche la compaction opencode",
+    "expect": [
+      "ses_234b333ccffe5BQ76dc1mVBY0f"
+    ],
+    "note": "auto 17/09 — reformulé (« Mécanisme compaction opencode »)"
+  },
+  {
+    "q": "modèles gratuits opencode zen cas d'usage",
+    "expect": [
+      "ses_228e5e2b9ffezbn5bLrl71y4fN"
+    ],
+    "note": "auto 17/09 (titre « Cas d'usage typiques modèles gratuits OpenCode Zen »)"
+  },
+  {
+    "q": "changer la police de l'interface opencode termux",
+    "expect": [
+      "ses_21d98e950ffe3c9RyE05eC3bfl",
+      "ses_2d286c7faffemYLKTSp3K7pFkn"
+    ],
+    "note": "auto 17/09 — ambiguïté réelle : la session « Lilex → ~/.termux/font.ttf, redémarrez Termux pour appliquer la police » change la police du terminal (donc de l'UI opencode dedans), l'autre change la police de l'UI opencode web. Les deux répondent à la question, acceptées."
+  },
+  {
+    "q": "comment utiliser openspec",
+    "expect": [
+      "ses_20b061fbaffeendeOuzw0tfn7p",
+      "ses_20bd7fe1effeIOG9Blx60Z9o7V"
+    ],
+    "note": "auto 17/09 — deux sessions mai sur OpenSpec usage, toutes deux valides"
+  },
+  {
+    "q": "chutes.ai",
+    "expect": [
+      "ses_201384c85ffeC7854w1WQQ03tr",
+      "ses_201378c25ffeJ8LONq10UotcRY"
+    ],
+    "note": "auto 17/09 — le top-1 trouvé (subagent « research the Chutes.ai platform, model quantization ») est le sous-agent de recherche de la session « Chutes.ai app » : même sujet, cible légitime ajoutée à la vérité terrain."
+  },
+  {
+    "q": "opencode sur termux faut-il proot",
+    "expect": [
+      "ses_1f67640bbffekwkgNlbdE5k9CQ"
+    ],
+    "note": "auto 17/09 — reformulé (« Opencode sur Termux : proot ou pas ? »)"
+  },
+  {
+    "q": "debug config .opencode termux",
+    "expect": [
+      "ses_1c84e7815ffewPgEGKFHNbeDY2",
+      "ses_1c853f0daffe8GSY6OOi9RckSN"
+    ],
+    "note": "auto 17/09 — deux sessions debug sur .opencode/ en mai, toutes deux valides"
+  },
+  {
+    "q": "ctx_search",
+    "expect": [
+      "ses_194c69d38ffeqbTB6FeB8OZQs5",
+      "ses_170735d2fffeareg7qb12nxU3o"
+    ],
+    "note": "auto 17/09 (titre « Question sur ctx_search ») — test mono-terme technique — 17/09 : la session « Vérifie si context mode marche / Essaye ctx_search » est un second hit légitime, ajoutée à la vérité terrain"
+  },
+  {
+    "q": "modes plan et build opencode",
+    "expect": [
+      "ses_17b06238dffeBYitdNLQqT0cYZ"
+    ],
+    "note": "auto 17/09 (titre « Modes plan et build d'OpenCode »)"
+  },
+  {
+    "q": "canopy wave ou synthetic",
+    "expect": [
+      "ses_0affb1cbcffeCyD7o28GFmMVYA"
+    ],
+    "note": "auto 17/09 — session non-techno (« Canopy Wave vs Synthetic à 30€ ») : l'historique ne parle pas que de code"
+  },
+  {
+    "q": "faisabilité plugin ai agent ks-agent",
+    "expect": [
+      "ses_fffcded12ffeDFT6v8dlajulNv",
+      "ses_fc22dd45fffeNSicTOncbabtvU"
+    ],
+    "note": "auto 17/09 (titre ks-agent « Plugin ai agent v0.1 : évaluation de faisabilité ») — 17/09 : subagent @explore qui confronte les specs du plugin ai agent au code, cible légitime ajoutée à la vérité terrain"
+  },
+  {
+    "q": "installer le backend paseo sous proot",
+    "expect": [
+      "ses_f971a7d99ffeeceaTPa73O3pWc"
+    ],
+    "note": "auto 17/09 (titre « Installation du backend Paseo sous proot »)"
+  },
+  {
+    "q": "retirer paseo proprement",
+    "expect": [
+      "ses_f9184c50bffeYPKfkfbz44jqCx"
+    ],
+    "note": "auto 17/09 — reformulé (« Suppression propre de paseo de l'environnement ») : teste la distinction installation vs suppression (sessions voisines)"
+  },
+  {
+    "q": "pourquoi big pickle absent opencode web",
+    "expect": [
+      "ses_23ec3acb2ffenQGXiqfLMVWYck"
+    ],
+    "note": "auto 17/09 — reformulé (« Pourquoi j'ai pas big pickle dans opencode web »)"
   }
 ]

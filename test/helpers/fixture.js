@@ -57,7 +57,7 @@ export function buildFixtureDb (dbPath) {
   // ── Session 2 : design (repo theme-kit) ──
   insSes.run('ses_fix2', null, '/root/theme-kit', 'Design thème sombre', T0 + 86400000, T0 + 90000000, 0.02, 3000, 600, 9000)
   msg('msg_u2', 'ses_fix2', T0 + 86401000, { role: 'user', agent: 'plan', model: { providerID: 'openai', modelID: 'gpt-5.6-luna' } })
-  part('prt_u2', 'msg_u2', 'ses_fix2', T0 + 86401000, { type: 'text', text: 'propose une palette lila pour le thème sombre du site' })
+  part('prt_u2', 'msg_u2', 'ses_fix2', T0 + 86401000, { type: 'text', text: 'propose une palette lila inspirée de chutes.ai pour le thème sombre du site' })
 
   // ── Session 3 : directory = home → repo null ──
   insSes.run('ses_fix3', 'ses_fix1', '/root', 'Sous-agent setup', T0 + 172800000, T0 + 173000000, 0, 100, 20, 0)
