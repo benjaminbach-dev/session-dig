@@ -80,7 +80,9 @@ test('incrémental : message modifié → maj sans doublon', async () => {
 test('incrémental : nouveau message → ajouté', async () => {
   const Database = (await import('better-sqlite3')).default
   const db = new Database(dbPath)
-  const t = Date.UTC(2026, 8, 16)
+  // Date.now() + marge : toujours au-dessus du watermark (posé à Date.now() par le
+  // test précédent) — une date fixe finirait sous lui dès le lendemain.
+  const t = Date.now() + 60000
   db.prepare(`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?)`)
     .run('msg_new1', 'ses_fix1', t, t, JSON.stringify({ role: 'user', agent: 'build', model: { providerID: 'x', modelID: 'y' } }))
   db.prepare(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)`)
