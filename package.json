@@ -10,6 +10,7 @@
   },
   "scripts": {
     "test": "node --test 'test/*.test.js'",
+    "eval": "node scripts/eval.mjs",
     "bench": "node scripts/bench.js"
   },
   "engines": {

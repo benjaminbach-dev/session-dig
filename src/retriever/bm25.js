@@ -101,7 +101,7 @@ export function search (indexPath, query) {
     if (agent) { where.push('e.agent = @agent') }
 
     const sql = `
-      SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model, e.cmd,
+      SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model, e.cmd, e.text,
              snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
              snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,
              rank AS score

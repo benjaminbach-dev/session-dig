@@ -27,11 +27,12 @@ sdig refresh         # ingest incrémental + index  (ou : node bin/sdig.js refre
 sdig "bug proxy 461" --repo ccp-proxy --after 2026-06
 sdig "bug proxy 461" --ctx 2        # + les messages voisins (hypothèse abandonnée ?)
 sdig read <session> --around <msgId>  # dérouler la session autour du hit
+sdig read <session> --around <msgId> --full  # texte intégral (marqueur de troncation sinon)
 sdig raw <partId>                    # la sortie d'outil complète (preuve)
 sdig "connection refused" --raw     # chercher aussi dans les sorties brutes (stderr)
 sdig status          # état corpus / index
-npm test             # 32 tests (dorées, titres, stopwords, phrases, contrat, contexte, raw)
-npm run eval         # 26 questions réelles — top1 26/26
+npm test             # 40 tests (dorées, titres, stopwords, phrases, contrat, contexte, raw, troncation)
+npm run eval         # 28 questions réelles — top1 28/26+2 (26 dorées + 2 brûlées du jeu naturel)
 npm run bench        # 5k events : index 190 ms, requête < 11 ms
 ```
 
@@ -44,6 +45,7 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 | v0 | adaptateur opencode + corpus + retriever FTS5 + CLI `sdig` | ✅ fait |
 | v0.1 | **retrouver la décision et ses preuves** : `read`/`--ctx` (contexte), `raw` (preuve), `--raw` (stderr) | ✅ fait |
 | v0.2 | évaluation sur recherches réelles (`npm run eval`) — 26 questions, **26/26 top1** après 3 améliorations motivées par l'éval (titres indexés, stopwords, OR pondéré) | ✅ fait |
+| v0.3 | **jamais de coupure silencieuse** (analyse du 1er passage du jeu naturel, 19/09) : marqueur de troncation (compteurs + chemin), `--full`/`--chars N`, `--json` intégral + 2 questions brûlées en régression | ✅ fait |
 | v1 | petit serveur MCP lecture seule : les agents creusent l'historique eux-mêmes | à venir |
 | v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
 | v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |

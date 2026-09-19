@@ -11,7 +11,7 @@ const USAGE = `sdig — archéologie de sessions opencode
 
 Usage:
   sdig <requête> [filtres]     recherche (commande par défaut)
-  sdig read <session> [--around <msgId>] [--ctx N] [--tail N]
+  sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--full | --chars N]
                                 dérouler une session autour d'un message
   sdig raw <partId>            afficher une sortie d'outil brute (preuve)
   sdig ingest [--db P] [--rebuild]   source → corpus (incrémental par défaut)
@@ -30,7 +30,9 @@ Filtres de recherche :
   --limit N      défaut 20
   --ctx N        affiche N messages voisins autour de chaque hit (lecture du contexte)
   --raw          cherche aussi dans les sorties brutes (stderr inclus)
-  --json         sortie JSON (script/tests)
+  --full         texte intégral des messages (lève la limite d'affichage ; read, --ctx, hits)
+  --chars N      limite d'affichage par message en caractères (défaut : 400 + 4 lignes)
+  --json         sortie JSON (script/tests ; texte intégral des messages dans le champ text)
   --plain        highlight sans ANSI
 
 Global :
@@ -45,20 +47,27 @@ function fail (msg, code = 1) {
 function parseArgs (argv) {
   const positional = []
   const flags = {}
-  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'head'])
+  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'head', 'full', 'chars'])
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--help' || a === '-h') { flags.help = true; continue }
     if (a.startsWith('--')) {
       const k = a.slice(2)
       if (!known.has(k)) fail(`option inconnue : ${a}\n\n${USAGE}`)
-      if (k === 'json' || k === 'plain' || k === 'rebuild' || k === 'raw') { flags[k] = true; continue }
+      if (k === 'json' || k === 'plain' || k === 'rebuild' || k === 'raw' || k === 'full') { flags[k] = true; continue }
       const v = argv[++i]
       if (v == null) fail(`option ${a} : valeur manquante`)
       flags[k] = v
     } else positional.push(a)
   }
   return { positional, flags }
+}
+
+function parseChars (flags) {
+  if (!flags.chars) return null
+  const n = parseInt(flags.chars, 10)
+  if (!Number.isFinite(n) || n < 1) fail('--chars : nombre invalide')
+  return n
 }
 
 async function main () {
@@ -111,7 +120,8 @@ async function main () {
 
   if (isSub && sub === 'read') {
     const sessionId = positional[0]
-    if (!sessionId) fail('usage : sdig read <session> [--around <msgId>] [--ctx N] [--tail N]')
+    if (!sessionId) fail('usage : sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--full | --chars N]')
+    const chars = parseChars(flags)
     const { sessionSlice } = await import('../src/read.js')
     const { renderRead } = await import('../src/format.js')
     const slice = sessionSlice(paths.root, sessionId, {
@@ -120,7 +130,7 @@ async function main () {
       tail: flags.tail ? parseInt(flags.tail, 10) : undefined
     })
     if (!slice) fail(`session inconnue : ${sessionId} (préfixe accepté dans sdig --session, pas ici — id complet requis)`)
-    console.log(renderRead(slice, sessionId))
+    console.log(renderRead(slice, sessionId, { full: !!flags.full, chars, plain: !!flags.plain }))
     return
   }
 
@@ -158,6 +168,7 @@ async function main () {
   })
   if (flags.json) { console.log(renderJson(hits)); return }
   if (!hits.length && !flags.raw) { console.log('aucun résultat'); return }
+  const chars = parseChars(flags)
   const { sessionsById, events } = loadCorpus(paths.root)
   const prettify = hits.map(h => ({ ...h, role: h.role === 'title' ? 'titre' : h.role }))
   if (hits.length) {
@@ -167,9 +178,9 @@ async function main () {
       if (!Number.isFinite(n) || n < 0) fail('--ctx : nombre invalide')
       const { eventsBySession } = await import('../src/read.js')
       ctxEvents = eventsBySession(events)
-      console.log(renderTerminal(prettify, sessionsById, { ctx: n, eventsBySession: ctxEvents, plain: flags.plain }))
+      console.log(renderTerminal(prettify, sessionsById, { ctx: n, eventsBySession: ctxEvents, plain: flags.plain, full: !!flags.full, chars }))
     } else {
-      console.log(renderTerminal(prettify, sessionsById, { plain: flags.plain }))
+      console.log(renderTerminal(prettify, sessionsById, { plain: flags.plain, full: !!flags.full, chars }))
     }
   }
   if (flags.raw) {

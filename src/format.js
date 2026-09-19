@@ -22,18 +22,61 @@ function trunc (s, n) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
 
+const ANSI_RE = /\x1b\[[0-9;]*m/g
+const stripAnsi = s => (s || '').replace(ANSI_RE, '')
+
+function fmtChars (n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+}
+
+/**
+ * Texte d'un message sous bornes d'affichage (change add-remedy-truncation).
+ * Défaut : 400 caractères puis 4 lignes (comportement historique). `--chars N` :
+ * budget de caractères explicite, sans limite de lignes. `--full` : intégral.
+ * Retourne { lines, cut, shownLen, total } — jamais de coupure silencieuse.
+ */
+function renderText (text, { full = false, chars = null } = {}) {
+  const total = (text || '').length
+  if (!text) return { lines: [], cut: false, shownLen: 0, total }
+  if (full) return { lines: text.split('\n'), cut: false, shownLen: total, total }
+  if (chars != null) {
+    const shown = trunc(text, chars)
+    return { lines: shown.split('\n'), cut: shown !== text, shownLen: shown.length, total }
+  }
+  const shown = trunc(text, 400).split('\n').slice(0, 4).join('\n')
+  return { lines: shown.split('\n'), cut: shown !== text, shownLen: shown.length, total }
+}
+
+/**
+ * Marqueur de troncation (change add-remedy-truncation, analyse du 19/09) :
+ * une coupure d'affichage silencieuse fait croire que l'archive ne contient
+ * pas la suite. Le marqueur donne les compteurs exacts et un chemin qui existe.
+ */
+function truncMarker ({ shownLen, total, sessionId, msgId, plain = false }) {
+  const dim = plain ? '' : '\x1b[2m'
+  const reset = plain ? '' : '\x1b[0m'
+  return `    ${dim}⚠ message tronqué à l'affichage (${fmtChars(shownLen)}/${fmtChars(total)} caractères) — intégral : sdig read ${sessionId} --around ${msgId} --full (ou --chars N) · sdig search --json${reset}`
+}
+
 /** Rendu d'un événement du corpus (voisin de hit ou lecture de session). */
-export function renderEvent (e, { mark = '  ', hit = null, plain = false } = {}) {
+export function renderEvent (e, { mark = '  ', hit = null, plain = false, full = false, chars = null } = {}) {
   const dim = plain ? '' : '\x1b[2m'
   const reset = plain ? '' : '\x1b[0m'
   const model = e.model && (e.model.providerID || e.model.modelID) ? `${e.model.providerID || ''}/${e.model.modelID || ''}` : ''
   const L = []
   const head = `${mark}${dim}${fmtTs(e.ts)} ${e.role}${model ? ` ${model}` : ''}${e.agent ? ` (${e.agent})` : ''}${e.cost ? ` ${fmtCost(e.cost)}` : ''}${reset}`
   L.push(head)
-  if (hit && hit.snip && hit.snip.trim()) {
+  if (!full && chars == null && hit && hit.snip && hit.snip.trim()) {
     for (const l of hit.snip.split('\n').slice(0, 3)) L.push(`    ${l}`)
+    // extrait de recherche plus court que le message → marqueur (id de session ≠ id de message : pas les lignes synthétiques de titre)
+    if (e.text && e.id !== e.sessionId) {
+      const shownLen = stripAnsi(hit.snip.split('\n').slice(0, 3).join('\n')).length
+      if (shownLen < e.text.length) L.push(truncMarker({ shownLen, total: e.text.length, sessionId: e.sessionId, msgId: e.id, plain }))
+    }
   } else if (e.text) {
-    for (const l of trunc(e.text, 400).split('\n').slice(0, 4)) L.push(`    ${l}`)
+    const r = renderText(e.text, { full, chars })
+    for (const l of r.lines) L.push(`    ${l}`)
+    if (r.cut) L.push(truncMarker({ shownLen: r.shownLen, total: r.total, sessionId: e.sessionId, msgId: e.id, plain }))
   }
   for (const c of e.toolCalls || []) {
     const ec = c.exitCode !== undefined ? ` (exit ${c.exitCode})` : ''
@@ -44,7 +87,8 @@ export function renderEvent (e, { mark = '  ', hit = null, plain = false } = {})
 }
 
 export function renderTerminal (hits, sessionsById, opts = {}) {
-  const { ctx = 0, eventsBySession = null, plain = false } = opts
+  const { ctx = 0, eventsBySession = null, plain = false, full = false, chars = null } = opts
+  const dim = plain ? '' : '\x1b[2m'
   const groups = groupBySession(hits)
   const lines = []
   const hitById = new Map(hits.map(h => [h.id, h]))
@@ -67,7 +111,7 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
         for (let i = a; i <= b; i++) {
           const e = evs[i]
           const hit = hitById.get(e.id)
-          lines.push(renderEvent(e, { mark: hit ? '► ' : '  ', hit, plain }))
+          lines.push(renderEvent(e, { mark: hit ? '► ' : '  ', hit, plain, full, chars }))
         }
         if (b < evs.length - 1) lines.push('    ⋯')
       }
@@ -75,9 +119,22 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
       for (const h of g.hits) {
         const meta = `\x1b[2m${fmtTs(h.ts)} ${h.role}${h.model ? ` ${h.model}` : ''}${h.agent ? ` (${h.agent})` : ''}\x1b[0m`
         lines.push(`  ${meta}`)
-        const snip = h.snip && h.snip.trim() ? h.snip : (h.snipCmd || '')
-        for (const l of snip.split('\n').slice(0, 3)) lines.push(`    ${l}`)
-        if (h.snipCmd && h.snip && h.snip.trim()) lines.push(`    \x1b[2m$ ${h.snipCmd.split('\n')[0]}\x1b[0m`)
+        if (full || chars != null) {
+          // bornes explicites : texte du message (le champ text est intégral depuis l'index)
+          const r = renderText(h.text || '', { full, chars })
+          for (const l of r.lines) lines.push(`    ${l}`)
+          if (r.cut && h.id !== h.session_id) lines.push(truncMarker({ shownLen: r.shownLen, total: r.total, sessionId: h.session_id, msgId: h.id, plain }))
+          if (h.snipCmd && h.snipCmd.trim()) lines.push(`    ${dim}$ ${h.snipCmd.split('\n')[0]}${reset0(plain)}`)
+        } else {
+          const snip = h.snip && h.snip.trim() ? h.snip : (h.snipCmd || '')
+          for (const l of snip.split('\n').slice(0, 3)) lines.push(`    ${l}`)
+          if (h.snipCmd && h.snip && h.snip.trim()) lines.push(`    ${dim}$ ${h.snipCmd.split('\n')[0]}${reset0(plain)}`)
+          // extrait de recherche plus court que le message → marqueur (jamais de coupure silencieuse)
+          if (h.text && h.id !== h.session_id) {
+            const shownLen = stripAnsi(snip.split('\n').slice(0, 3).join('\n')).length
+            if (shownLen < h.text.length) lines.push(truncMarker({ shownLen, total: h.text.length, sessionId: h.session_id, msgId: h.id, plain }))
+          }
+        }
       }
     }
     lines.push('')
@@ -86,8 +143,11 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
   return lines.join('\n')
 }
 
+function reset0 (plain) { return plain ? '' : '\x1b[0m' }
+
 /** Lecture d'une session (sdig read) : fenêtres avec index positionnels. */
-export function renderRead (slice, sessionId) {
+export function renderRead (slice, sessionId, opts = {}) {
+  const { full = false, chars = null, plain = false } = opts
   const { ses, events: evs, spans, error } = slice
   const L = []
   const title = ses ? `${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}` : sessionId
@@ -98,7 +158,7 @@ export function renderRead (slice, sessionId) {
     for (let i = a; i <= b; i++) {
       const e = evs[i]
       const mark = slice.aroundIdx === i ? '► ' : '  '
-      L.push(`${String(i).padStart(3)} ${renderEvent(e, { mark })}`)
+      L.push(`${String(i).padStart(3)} ${renderEvent(e, { mark, full, chars, plain })}`)
     }
     if (b < evs.length - 1) L.push('  ⋯')
   }
@@ -131,6 +191,7 @@ export function renderJson (hits) {
     score: h.score,
     snippet: h.snip,
     cmdSnippet: h.snipCmd,
+    text: h.text ?? undefined,
     cost: h.cost ?? undefined
   })), null, 2)
 }

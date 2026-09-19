@@ -190,5 +190,19 @@
       "ses_23ec3acb2ffenQGXiqfLMVWYck"
     ],
     "note": "auto 17/09 — reformulé (« Pourquoi j'ai pas big pickle dans opencode web »)"
+  },
+  {
+    "q": "prêts écrire specs produit architecture règles figer",
+    "expect": [
+      "ses_00a1b1eabffeN5Z9RzBfZUuRcN"
+    ],
+    "note": "brûlée (analyse 19/09, troncation — n43) — reformulation d'une question naturelle dont la réponse énumère dix règles et six capacités ; cible du remède --full (contenu intégral)"
+  },
+  {
+    "q": "supprimer oauth résout P0 impersonate remote token",
+    "expect": [
+      "ses_fc2433a05ffeC6le6PEkHBfV70"
+    ],
+    "note": "brûlée (analyse 19/09, troncation — n41) — reformulation d'une question naturelle sur la suppression d'OAuth et les P0 restants (impersonate) ; cible du remède --full"
   }
 ]
