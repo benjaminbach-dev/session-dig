@@ -46,6 +46,11 @@ before(async () => {
     .run('msg_bug1', 'ses_fix1', t + 1000, t + 1000, JSON.stringify({ role: 'assistant', agent: 'build', providerID: 'p', modelID: 'm' }))
   db.prepare(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)`)
     .run('prt_bug1', 'msg_bug1', 'ses_fix1', t + 1000, t + 1000, JSON.stringify({ type: 'text', text: BUG_TEXT }))
+  const QUOTED_TEXT = 'guillemets « alpha »'
+  db.prepare(`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?)`)
+    .run('msg_quotes1', 'ses_fix1', t + 2000, t + 2000, JSON.stringify({ role: 'assistant', agent: 'build', providerID: 'p', modelID: 'm' }))
+  db.prepare(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)`)
+    .run('prt_quotes1', 'msg_quotes1', 'ses_fix1', t + 2000, t + 2000, JSON.stringify({ type: 'text', text: QUOTED_TEXT }))
   db.close()
   await ingest({ root, db: dbPath })
   index(root, indexPath)
@@ -116,6 +121,22 @@ test('search --json : champ text = texte intégral (sans troncation)', () => {
   const json = JSON.parse(renderJson(hits))
   assert.equal(json[0].text, LONG, 'rendu JSON intégral')
   assert.equal(json[0].id, 'msg_long1')
+})
+
+test('régression : guillemets de la source conservés, aucun faux marqueur (plain/ANSI, hits/contexte)', () => {
+  const { events, sessionsById } = loadCorpus(root)
+  const quotedEvents = eventsBySession(events.filter(e => e.id === 'msg_quotes1'))
+  for (const plain of [true, false]) {
+    const hits = search(indexPath, { q: 'guillemets', limit: 3, plain })
+    const h = hits.find(x => x.id === 'msg_quotes1')
+    assert.ok(h, 'hit trouvé')
+    assert.equal(h.snipPlain, h.text, 'le jumeau intégral conserve les guillemets source')
+    for (const ctx of [0, 1]) {
+      const out = renderTerminal([h], sessionsById, { plain, ctx, eventsBySession: quotedEvents })
+      assert.ok(out.includes('« alpha »'), 'guillemets source affichés')
+      assert.ok(!out.includes('⚠'), `aucune fausse troncation (plain=${plain}, ctx=${ctx})`)
+    }
+  }
 })
 
 test('régression 20/09 : extrait décoré »…« plus long que le message → coupure détectée quand même', () => {

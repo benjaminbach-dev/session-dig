@@ -30,11 +30,12 @@ const stripAnsi = s => (s || '').replace(ANSI_RE, '')
  * de coupure ne doit jamais mesurer le texte décoré. En --plain les marqueurs »…«
  * gonflent la longueur — un extrait coupé pouvait dépasser la longueur du message
  * complet et passer inaperçu. snipPlain (jumeau sans décorations, calculé par le
- * retriever) fait foi ; à défaut on décore le texte à la main (ANSI + »«).
+ * retriever) fait foi et conserve les caractères de la source, dont « ».
+ * Sans ce jumeau, le nettoyage des décorations (ANSI + »«) reste un repli approximatif.
  */
 function contentLen (displayed, plainTwin) {
-  const src = plainTwin != null ? plainTwin : displayed
-  return stripAnsi(src).replaceAll('»', '').replaceAll('«', '').length
+  if (plainTwin != null) return plainTwin.length
+  return stripAnsi(displayed).replaceAll('»', '').replaceAll('«', '').length
 }
 
 function fmtChars (n) {
