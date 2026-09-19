@@ -27,4 +27,4 @@ Deux questions du jeu naturel ont orienté ce remède : elles cessent d'être de
 
 ## Non-couvert ici
 
-R2 (chronologie des mutations postérieures à un ancrage, option `--at`) : change séparé, motivé par la dérive temporelle (n46, n50) — délégation à écrire après celui-ci.
+R2 (filtre temporel simple, option `--at`) : change séparé, motivé par la dérive temporelle (n46, n50). Périmètre volontairement minimal (retour du 20/09) : **masquer les messages postérieurs à un ancrage** (`--at <msgId|ts>`), sans détection automatique des mutations d'état — détecter qu'un message change un état est un chantier autrement ambitieux, hors périmètre.

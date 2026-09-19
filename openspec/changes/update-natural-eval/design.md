@@ -6,6 +6,7 @@ La règle « sdig seul » a tenu pour sqlite (0/50) mais pas pour la lecture dir
 
 - Motifs épinglés dans le script (toute évolution = commit) : `sqlite`, `opencode.db`, `index.db`, `events.jsonl`, `sessions.jsonl`, chemin du répertoire corpus, `sdig ingest|refresh`. `sdig read/raw/search/status/index` restent légitimes.
 - L'audit **liste** les faits (question, outil, extrait de commande) ; la **qualification** (déviation majeure vs listage borderline) reste humaine, écrite dans le rapport. On ne veut pas d'un juge automatique faux négatif, on veut une détection zéro-faux-positif.
+- **Un filet, pas une porte** (retour du 20/09) : l'audit regex détecte a posteriori, il ne garantit pas l'exclusivité d'accès. Quand le harnais d'un futur test permet une restriction réelle (outils désactivés, wrapper n'exposant que sdig), elle prime ; l'audit reste obligatoire dans tous les cas.
 - La sortie est du markdown annexable au rapport (local, gitignored).
 
 ## Granularité de notation : l'unité est le fait, pas la réponse
@@ -13,8 +14,9 @@ La règle « sdig seul » a tenu pour sqlite (0/50) mais pas pour la lecture dir
 L'analyse du 19/09 montre un facteur 7 entre les deux barres (36 vs 5 pleines). Décision : l'unité de notation est **l'entrée d'`expect`** (bullet E1, E2, E3…) notée ✔/~/✖ ; le tableau par question est la donnée première, les buckets en sont une vue dérivée :
 
 - pleine = tous les faits ✔ ;
-- partielle = au moins un fait non-✔ avec au moins un ✔ ;
-- échec = aucun ✔.
+- partielle = au moins un fait non-✔ avec au moins un fait restitué (✔ ou ~) ;
+- échec = aucune restitution (ni ✔ ni ~) ;
+- **aucun bucket intermédiaire** : la première version du rapport d'analyse du 19/09 avait introduit « quasi-pleine » et « faible », puis les a appliqués de façon incohérente (des ✔✔✖ classées quasi-pleines) — la leçon est codifiée ici : deux buckets, la nuance vit dans le tableau.
 
 Un désaccord inter-correcteurs se tranche par extraction du texte intégral du message source (lecture seule du corpus) — c'est l'arbitrage qui fait foi, pas la majorité.
 

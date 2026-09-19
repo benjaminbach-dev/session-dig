@@ -40,7 +40,7 @@ Chaque réponse SHALL être notée sur deux axes séparés, parce qu'ils échoue
 1. **Rappel (retrieval)** : l'agent a-t-il cité la session source — identifiant complet, ou titre sans ambiguïté, ou identifiant tronqué si l'identifiant complet figure ailleurs dans la même réponse ? Un agent qui répond juste sans citer, en variante A, n'a pas fait le travail demandé et SHALL être noté manquant sur cet axe.
 2. **Fidélité (fidelity)** : les faits attendus sont-ils présents et corrects, sans affirmation interdite (`mustNot`) et sans invention ? La notation SHALL valoriser l'abstention honnête (« je ne trouve pas dans l'archive ») au-dessus d'une réponse inventée : une abstention est un échec de rappel, une invention est un échec de fidélité **et** un signal de fiabilité négatif.
 
-La fidélité SHALL être notée **fait attendu par fait attendu** : chaque entrée d'`expect` reçoit ✔ (restitué), ~ (partiel) ou ✖ (absent). Le **tableau par question** (rappel + une colonne par fait) est la donnée première du rapport ; les listes agrégées n'en sont qu'une vue. Les buckets SHALL être dérivés sans ambiguïté : **pleine** = tous les faits ✔ ; **partielle** = au moins un fait non-✔ avec au moins un ✔ ; **échec** = aucun ✔.
+La fidélité SHALL être notée **fait attendu par fait attendu** : chaque entrée d'`expect` reçoit ✔ (restitué), ~ (partiel) ou ✖ (absent). Le **tableau par question** (rappel + une colonne par fait) est la donnée première du rapport ; les listes agrégées n'en sont qu'une vue. Les buckets SHALL être dérivés sans ambiguïté : **pleine** = tous les faits ✔ ; **partielle** = au moins un fait non-✔ avec au moins un fait restitué (✔ ou ~) ; **échec** = aucune restitution (ni ✔ ni ~). Aucun bucket intermédiaire (quasi-pleine, faible…) n'est admis : la restitution partielle se lit dans le tableau, pas dans un label — l'expérience du 19/09 a montré que les labels intermédiaires dérivent.
 
 Une affirmation d'absence ou de complétude contredite par le corpus (le texte intégral du message source y existe, extraction à l'appui) est une **fausse méta-affirmation** : le fait concerné est compté ✖, l'affirmation est tracée comme signal distinct et agrégée en taux propre — elle est plus grave qu'un détail perdu, car elle décrit faussement la source ; elle n'est pas une invention (le fait est dans l'archive).
 
@@ -91,7 +91,7 @@ Chaque exécution SHALL produire un rapport daté et lisible contenant : modèle
 
 ### Requirement: Audit déterministe des accès
 
-Le dépôt SHALL embarquer un script d'audit des accès (`scripts/audit-toolcalls.mjs`) qui scanne les appels d'outils enregistrés d'une exécution (un JSON par réponse, champ `toolCalls`) et liste, par question, toute commande touchant directement l'archive : fichiers du répertoire du corpus (`events.jsonl`, `sessions.jsonl`, `raw/`), `opencode.db`, `index.db`, invocations sqlite, `sdig ingest`/`sdig refresh`. La liste des motifs SHALL être épinglée dans le script — toute évolution passe par un commit. Le résultat de l'audit SHALL être annexé au rapport ; un rapport sans audit est déclaré « non audité » en toutes lettres. L'audit liste les faits (question, outil, extrait de commande) ; la qualification de gravité reste une décision humaine écrite dans le rapport.
+Le dépôt SHALL embarquer un script d'audit des accès (`scripts/audit-toolcalls.mjs`) qui scanne les appels d'outils enregistrés d'une exécution (un JSON par réponse, champ `toolCalls`) et liste, par question, toute commande touchant directement l'archive : fichiers du répertoire du corpus (`events.jsonl`, `sessions.jsonl`, `raw/`), `opencode.db`, `index.db`, invocations sqlite, `sdig ingest`/`sdig refresh`. La liste des motifs SHALL être épinglée dans le script — toute évolution passe par un commit. L'audit est un **filet de détection a posteriori, pas une garantie d'exclusivité d'accès** : quand le harnais d'examen permet de restreindre réellement les accès (outils désactivés hors sdig, wrapper de commandes n'exposant que sdig, environnement confiné), la restriction réelle SHALL être préférée ; l'audit reste obligatoire dans tous les cas. Le résultat de l'audit SHALL être annexé au rapport ; un rapport sans audit est déclaré « non audité » en toutes lettres. L'audit liste les faits (question, outil, extrait de commande) ; la qualification de gravité reste une décision humaine écrite dans le rapport.
 
 #### Scenario: Déviation détectée
 
@@ -102,6 +102,11 @@ Le dépôt SHALL embarquer un script d'audit des accès (`scripts/audit-toolcall
 
 - **WHEN** toutes les commandes d'un run passent par sdig
 - **THEN** l'audit ne liste rien et le rapport peut porter « zéro déviation » avec la preuve attachée.
+
+#### Scenario: Restriction réelle préférée au filet
+
+- **WHEN** le harnais d'examen permet de filtrer les commandes exécutables ou de n'exposer que sdig
+- **THEN** la variante A s'exécute avec cette restriction réelle, et l'audit ne sert qu'à confirmer — un filet ne remplace pas une porte.
 
 ### Requirement: Inter-notation indépendante
 
