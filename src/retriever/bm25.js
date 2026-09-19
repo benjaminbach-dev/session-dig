@@ -86,6 +86,8 @@ export function search (indexPath, query) {
   // matchant tous les termes cumule les poids et sort naturellement en tête.
   const match = ftsQuery(q, 'OR')
   // snippet col0 = text, col1 = cmd. Marqueurs ANSI par défaut (TUI), neutres si plain.
+  // snipPlain = jumeau SANS décorations (bug 20/09 : la détection de coupure ne doit
+  // jamais mesurer le texte décoré — en --plain, »…« gonfle la longueur et masque la coupure).
   const open = query.plain ? '»' : '\x1b[1;33m'
   const close = query.plain ? '«' : '\x1b[0m'
   const db = new Database(indexPath, { readonly: true, fileMustExist: true })
@@ -103,6 +105,7 @@ export function search (indexPath, query) {
     const sql = `
       SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model, e.cmd, e.text,
              snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
+             snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
              snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,
              rank AS score
       FROM events e JOIN events_fts ON e.rowid = events_fts.rowid

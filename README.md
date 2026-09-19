@@ -31,7 +31,7 @@ sdig read <session> --around <msgId> --full  # texte intégral (marqueur de tron
 sdig raw <partId>                    # la sortie d'outil complète (preuve)
 sdig "connection refused" --raw     # chercher aussi dans les sorties brutes (stderr)
 sdig status          # état corpus / index
-npm test             # 40 tests (dorées, titres, stopwords, phrases, contrat, contexte, raw, troncation)
+npm test             # 41 tests (dorées, titres, stopwords, phrases, contrat, contexte, raw, troncation + régression décorée)
 npm run eval         # 28 questions réelles — top1 28/26+2 (26 dorées + 2 brûlées du jeu naturel)
 npm run bench        # 5k events : index 190 ms, requête < 11 ms
 ```

@@ -40,6 +40,12 @@ before(async () => {
     .run('msg_long1', 'ses_fix1', t, t, JSON.stringify({ role: 'assistant', agent: 'build', providerID: 'p', modelID: 'm' }))
   db.prepare(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)`)
     .run('prt_long1', 'msg_long1', 'ses_fix1', t, t, JSON.stringify({ type: 'text', text: LONG }))
+  // régression 20/09 : message court, extrait décoré plus long que le message (coupure masquée)
+  const BUG_TEXT = 'surbrillance un surbrillance deux surbrillance trois surbrillance quatre surbrillance cinq surbrillance six surbrillance sept fin'
+  db.prepare(`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?)`)
+    .run('msg_bug1', 'ses_fix1', t + 1000, t + 1000, JSON.stringify({ role: 'assistant', agent: 'build', providerID: 'p', modelID: 'm' }))
+  db.prepare(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)`)
+    .run('prt_bug1', 'msg_bug1', 'ses_fix1', t + 1000, t + 1000, JSON.stringify({ type: 'text', text: BUG_TEXT }))
   db.close()
   await ingest({ root, db: dbPath })
   index(root, indexPath)
@@ -110,4 +116,21 @@ test('search --json : champ text = texte intégral (sans troncation)', () => {
   const json = JSON.parse(renderJson(hits))
   assert.equal(json[0].text, LONG, 'rendu JSON intégral')
   assert.equal(json[0].id, 'msg_long1')
+})
+
+test('régression 20/09 : extrait décoré »…« plus long que le message → coupure détectée quand même', () => {
+  // Retour utilisateur : en --plain, les marqueurs de surbrillance gonflent la longueur
+  // de l'extrait ; la détection de coupure ne doit jamais mesurer le texte décoré.
+  const hits = search(indexPath, { q: 'surbrillance', limit: 3, plain: true })
+  const h = hits.find(x => x.id === 'msg_bug1')
+  assert.ok(h, 'hit trouvé')
+  const decorated = h.snip.split('\n').slice(0, 3).join('\n')
+  assert.ok(decorated.length >= h.text.length, `régime du bug reproduit (décoré ${decorated.length} ≥ message ${h.text.length})`)
+  assert.ok(!decorated.includes('fin'), 'la fin du message manque dans l\'extrait')
+  assert.ok(h.snipPlain != null && !h.snipPlain.includes('»'), 'snipPlain : jumeau sans décorations')
+  const { sessionsById } = loadCorpus(root)
+  const out = renderTerminal([h], sessionsById, { plain: true })
+  assert.ok(out.includes('⚠ message tronqué'), 'marqueur présent malgré la décoration')
+  assert.ok(out.includes(`/${fmt(h.text.length)} caractères)`), 'compteur total exact')
+  assert.ok(out.includes('sdig read ses_fix1 --around msg_bug1 --full'), 'chemin intégral')
 })

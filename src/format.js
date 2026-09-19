@@ -25,6 +25,18 @@ function trunc (s, n) {
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 const stripAnsi = s => (s || '').replace(ANSI_RE, '')
 
+/**
+ * Longueur « nue » de l'extrait affiché (bug 20/09, retour utilisateur) : la détection
+ * de coupure ne doit jamais mesurer le texte décoré. En --plain les marqueurs »…«
+ * gonflent la longueur — un extrait coupé pouvait dépasser la longueur du message
+ * complet et passer inaperçu. snipPlain (jumeau sans décorations, calculé par le
+ * retriever) fait foi ; à défaut on décore le texte à la main (ANSI + »«).
+ */
+function contentLen (displayed, plainTwin) {
+  const src = plainTwin != null ? plainTwin : displayed
+  return stripAnsi(src).replaceAll('»', '').replaceAll('«', '').length
+}
+
 function fmtChars (n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 }
@@ -70,7 +82,7 @@ export function renderEvent (e, { mark = '  ', hit = null, plain = false, full =
     for (const l of hit.snip.split('\n').slice(0, 3)) L.push(`    ${l}`)
     // extrait de recherche plus court que le message → marqueur (id de session ≠ id de message : pas les lignes synthétiques de titre)
     if (e.text && e.id !== e.sessionId) {
-      const shownLen = stripAnsi(hit.snip.split('\n').slice(0, 3).join('\n')).length
+      const shownLen = contentLen(hit.snip.split('\n').slice(0, 3).join('\n'), hit.snipPlain != null ? hit.snipPlain.split('\n').slice(0, 3).join('\n') : null)
       if (shownLen < e.text.length) L.push(truncMarker({ shownLen, total: e.text.length, sessionId: e.sessionId, msgId: e.id, plain }))
     }
   } else if (e.text) {
@@ -130,8 +142,8 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
           for (const l of snip.split('\n').slice(0, 3)) lines.push(`    ${l}`)
           if (h.snipCmd && h.snip && h.snip.trim()) lines.push(`    ${dim}$ ${h.snipCmd.split('\n')[0]}${reset0(plain)}`)
           // extrait de recherche plus court que le message → marqueur (jamais de coupure silencieuse)
-          if (h.text && h.id !== h.session_id) {
-            const shownLen = stripAnsi(snip.split('\n').slice(0, 3).join('\n')).length
+          if (h.text && h.snip && h.snip.trim() && h.id !== h.session_id) {
+            const shownLen = contentLen(snip.split('\n').slice(0, 3).join('\n'), h.snipPlain != null ? h.snipPlain.split('\n').slice(0, 3).join('\n') : null)
             if (shownLen < h.text.length) lines.push(truncMarker({ shownLen, total: h.text.length, sessionId: h.session_id, msgId: h.id, plain }))
           }
         }
