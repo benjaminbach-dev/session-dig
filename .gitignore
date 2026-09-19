@@ -6,6 +6,13 @@ raw/
 *.db-wal
 .session-dig/
 
+# Jeu de test naturel (données privées, jamais publiées — voir openspec/specs/natural-eval)
+eval/natural/*.jsonl
+eval/natural/*.json
+eval/natural/questions.md
+eval/natural/sample-review.md
+eval/natural/runs/
+
 # Node
 node_modules/
 dist/
