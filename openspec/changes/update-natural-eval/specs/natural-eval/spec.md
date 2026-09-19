@@ -101,7 +101,7 @@ Le dépôt SHALL embarquer un script d'audit des accès (`scripts/audit-toolcall
 #### Scenario: Run sain
 
 - **WHEN** toutes les commandes d'un run passent par sdig
-- **THEN** l'audit ne liste rien et le rapport peut porter « zéro déviation » avec la preuve attachée.
+- **THEN** l'audit ne liste rien et le rapport porte « aucune déviation détectée » — formulation qui rappelle la limite du filet (rien de détecté n'est pas preuve que rien n'a eu lieu).
 
 #### Scenario: Restriction réelle préférée au filet
 

@@ -16,7 +16,7 @@ L'analyse du 19/09 montre un facteur 7 entre les deux barres (36 vs 5 pleines). 
 - pleine = tous les faits ✔ ;
 - partielle = au moins un fait non-✔ avec au moins un fait restitué (✔ ou ~) ;
 - échec = aucune restitution (ni ✔ ni ~) ;
-- **aucun bucket intermédiaire** : la première version du rapport d'analyse du 19/09 avait introduit « quasi-pleine » et « faible », puis les a appliqués de façon incohérente (des ✔✔✖ classées quasi-pleines) — la leçon est codifiée ici : deux buckets, la nuance vit dans le tableau.
+- **aucun bucket intermédiaire** : la première version du rapport d'analyse du 19/09 avait introduit « quasi-pleine » et « faible », puis les a appliqués de façon incohérente (des ✔✔✖ classées quasi-pleines) — la leçon est codifiée ici : trois buckets (pleine, partielle, échec), la nuance vit dans le tableau.
 
 Un désaccord inter-correcteurs se tranche par extraction du texte intégral du message source (lecture seule du corpus) — c'est l'arbitrage qui fait foi, pas la majorité.
 
