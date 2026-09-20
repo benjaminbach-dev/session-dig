@@ -21,6 +21,7 @@ Ce change est **documentaire**. Les nombres sont des bornes de conception, à v�
 - L'index SQLite (aujourd'hui dédié à la recherche) s'étend en **vue de lecture** : table des événements avec le JSON intégral de chaque enregistrement + colonnes filtrables + FTS5, et table des sessions (métadonnées complètes).
 - `read` (`--around`, `--ctx`, `--tail`, `--at`), les voisins de recherche et `status` s'y exécutent par **requêtes bornées** (fenêtres cléset sur `(sessionId, ts, id)`) : O(log n + k), mémoire bornée par la fenêtre.
 - La logique métier (résolution d'ancre, masquage avant fenêtrage, marqueurs, troncature) est **conservée telle quelle** — seul l'accès aux données change. La sémantique CLI observable reste celle des specs `search` en vigueur.
+- **Snapshot de lecture** (retour du 20/09 soir, 2e point) : toutes les requêtes d'une même commande (hits → voisins → compteurs) s'exécutent dans une **unique transaction de lecture SQLite** — une publication concurrente ne s'intercale pas dans une lecture en cours ; c'est ce qui rend tenable « pas de mélange de générations » au sein d'une commande.
 - **Compteurs** : `maskedCount`, `visible`, `total` restent exacts. Leur calcul est un dénombrement sur la plage indexée de la session — coût O(plage), pas O(fenêtre) : masquer tôt dans une session de 100 000 messages dénombre ~100 000 lignes via l'index. Ce coût est couvert par les cibles du banc (mesuré sur la session géante), pas caché derrière « fenêtre bornée ».
 - **Fraîcheur** : la vue porte en son sein le watermark du corpus auquel elle correspond ; toute lecture vérifie et **refuse explicitement** une vue absente ou périmée (avec l'instruction de réparation). `sdig read` devient dépendant de la vue — changement d'usage documenté dans le README. **Limite écrite au lieu d'implicite** (retour du 20/09 soir) : le watermark couvre le **chemin d'ingestion documenté** — il détecte un corpus plus récent que la vue. Une modification **hors ingestion** (shard édité à la main, watermark inchangé) n'est pas détectée par la fraîcheur ; l'outil de détection est l'empreinte (D7). Deux outils, deux usages, aucune promesse de couverture croisée.
 - Le contrat « index jetable » est inchangé : entièrement reconstruisable depuis le seul corpus. En plus, la vue est **maintenue incrémentalement** pendant l'ingestion (insertions/suppressions ciblées) ; le rebuild complet reste la référence de réparation. En cas de divergence non résolue, le rebuild depuis le corpus fait foi.
@@ -37,21 +38,23 @@ Ce change est **documentaire**. Les nombres sont des bornes de conception, à v�
 
 **Protocole de publication** (retour du 20/09 soir : des renames atomiques par fichier + `state.json` en dernier ne font pas une transaction entre shards, métadonnées, preuves et SQLite) :
 
-1. **Staging** : chaque fichier réécrit est d'abord écrit sous un nom temporaire (`.new`) ; la vue SQLite accumule ses changements dans une transaction ouverte, non validée.
-2. **Publication** : renames des fichiers préparés → **COMMIT de la transaction de la vue** → écriture de `state.json`, en dernier.
-3. **Ramassage** : les temporaires orphelins (crash avant publication) sont supprimés à la passe suivante.
+1. **Marqueur** : un marqueur persistant d'ingestion en cours est posé **avant tout remplacement de fichier** et retiré en tout dernier (après `state.json`). Un crash après le dernier rename, avant le COMMIT, ne laisse plus de `.new` ni d'écart de `state.json` — le marqueur est le seul détecteur fiable de cet état (retour du 20/09 soir).
+2. **Staging** : chaque fichier réécrit est d'abord écrit sous un nom temporaire (`.new`) ; la vue SQLite accumule ses changements dans une transaction ouverte, non validée.
+3. **Publication** : renames des fichiers préparés → **COMMIT de la transaction de la vue** → écriture de `state.json` → retrait du marqueur.
+4. **Ramassage** : les temporaires orphelins (crash avant publication) sont supprimés à la passe suivante.
 
 **Le COMMIT de la vue est le point de publication.** Conséquences contractuelles :
 - chaque shard est publié atomiquement (rename) — **jamais de shard déchiré** ;
 - entre shards, la publication est **éventuelle** : un crash pendant les renames peut laisser sur disque un mélange de générations de shards — mais **aucune commande de lecture ne consulte les shards directement** (elles passent par la vue, dont la transaction est atomique) : les lectures rendent toujours le **dernier état publié**, cohérent ;
 - un crash entre COMMIT et `state.json` laisse la vue **en avance** sur `state.json` : c'est un état publié valide ; la passe suivante relit le delta depuis l'ancien watermark et ré-applique idempotemment — convergence garantie sans doublon ;
-- une **preuve brute** consultée pendant une publication interrompue peut être en avance sur la vue (raw publié avant le COMMIT) : transitoire documenté, réparé à la passe suivante ;
-- les parcours d'archive (rebuild, empreinte, migration) peuvent observer l'état intermédiaire (temporaires présents, `state.json` en retard) : ils le **signalent** au lieu de l'ignorer ;
+- une **preuve brute** consultée pendant une publication interrompue peut être en avance sur la vue (raw publié avant le COMMIT) : transitoire documenté, **signalé dans la sortie** tant que le marqueur est présent (l'avertissement nomme l'état non réconcilié et la marche à suivre), réparé à la passe suivante ;
+- **réconciliation, régie par le marqueur** : tant qu'il est présent, les commandes de lecture restent autorisées (dernier état publié) et celles touchant des preuves affichent l'avertissement ; les opérations d'archive (rebuild, empreinte, migration) **refusent** avec la marche à suivre — un crash après le dernier rename, avant le COMMIT, ne laisse ni `.new` ni `state.json` en retard : sans marqueur, cet état serait indétectable et un rebuild transformerait un état non publié en référence (retour du 20/09 soir) ;
+- **reprise sans source** : à défaut de source, une reprise **explicite** assume l'état sur disque — vue reconstruite depuis le corpus tel qu'il est, watermark de `state.json` conservé (la prochaine ingestion depuis la source convergera), marqueur retiré — décision d'opérateur consignée, jamais le défaut d'un rebuild ;
 - la passe suivante converge toujours vers le même résultat qu'une passe unique.
 
 **Verrou** : flock sur le corpus contre deux ingestions concurrentes ; les lecteurs ne verrouillent pas (WAL + renames atomiques).
 
-**Tests de points de crash** (à écrire avec l'implémentation) : avant staging, pendant staging, entre renames, après COMMIT avant `state.json` — dans chaque cas : lectures = dernier état publié, passe suivante converge, temporaires ramassés.
+**Tests de points de crash** (à écrire avec l'implémentation) : avant staging, pendant staging, entre renames, **après le dernier rename avant COMMIT (détection par le marqueur — plus aucun `.new`)**, après COMMIT avant `state.json` — dans chaque cas : lectures = dernier état publié, opérations d'archive refusées via le marqueur, avertissement preuves, passe suivante converge, temporaires ramassés. Plus un test de snapshot : publication concurrente pendant une lecture multi-étapes (hits → voisins → compteurs) — un seul snapshot par commande, jamais de génération intercalée.
 
 ## D4 — Mémoire bornée, partout
 
