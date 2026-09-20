@@ -1,187 +1,103 @@
 # Design — add-mcp-server
 
-Décisions arrêtées avant implémentation (SDD). Les valeurs numériques sont des **bornes de
-conception**, à vérifier et ajuster à l'implémentation avec mesure (comme les cibles de performance de
-`search`) ; les règles de confidentialité et de fermeture, elles, ne sont pas négociables.
+## D0 — V1 recentrée (20/09)
 
-## D1 — Transport : Streamable HTTP sur loopback
+Décision utilisateur : rendre le CLI accessible aux agents, sans transformer cette façade en moteur de restitution généraliste. La sécurité, la lecture complète accessible et la sémantique de `at` restent requises. Les totaux exhaustifs obligatoires, les partiels après timeout et le déterminisme de l'enveloppe technique sont retirés du contrat v1.
 
-- **Streamable HTTP** (spec MCP 2025-03-26 et suivantes), pas stdio : le patron `agora-scout` est déjà
-  intégré dans Agora via ce transport, et un service supervisé par le manifeste Termux survit aux
-  redémarrages du client MCP sans que le client ait à relancer un processus.
-- **`127.0.0.1:18767`** — loopback exclusif. Ports voisins occupés : `18765` = proxy ccp,
-  `18766` = agora-scout. On refuse `0.0.0.0` et toute interface externe, y compris en configuration :
-  le service n'a aucune raison d'être joint depuis le réseau, et l'erreur de configuration la plus
-  coûteuse possible ici est justement « exposé par accident ».
-- **Pas d'authentification par défaut** (bind loopback), **token statique optionnel** activable par
-  configuration — même décision que `agora-scout` (14/09), assumée : la surface d'attaque reste le
-  loopback de la machine, et un token mal géré donnerait une fausse impression de sécurité. Un mode
-  `stdio` pourra être ajouté plus tard sans casser les outils ; hors périmètre ici.
-- **Aucun egress** : le service n'appelle ni fournisseur de modèle, ni API, ni le proxy. Il lit le
-  corpus local et répond. C'est la différence de nature avec `agora-scout` (qui, lui, appelle un
-  modèle) : ici, zéro coût et zéro fuite par le service lui-même.
-- SDK : MCP TypeScript officiel (`@modelcontextprotocol/sdk`). **Version épinglée à l'implémentation**
-  après vérification (le paquet est passé en ligne v2 — `@modelcontextprotocol/server`/`client` — et la
-  version publiée évolue) ; la spec n'écrit donc pas de numéro qu'elle n'a pas vérifié.
+Ce change reste **documentaire**. Aucun SDK installé, aucun code MCP, aucun serveur lancé ni manifeste modifié. Les nombres ci-dessous sont des plafonds de conception ; leur évolution doit être documentée et validée, pas changée silencieusement dans le code.
 
-## D2 — Catalogue fermé de 4 outils
+## D1 — Transport et confinement HTTP
 
-| Outil | Paramètres (bornés) | Réponse |
+- Streamable HTTP, Node/ESM, SDK MCP officiel dont le paquet et la version publiée seront vérifiés puis épinglés dans le change d'implémentation. Ne pas présumer ici de la ligne majeure disponible.
+- Écoute exclusive `127.0.0.1:18767` ; toute autre adresse configurée est refusée. Aucun appel réseau sortant (modèle, proxy, API, télémétrie).
+- Validation stricte de `Host` : formes loopback et port attendus uniquement. `Origin` absent est permis pour les clients non navigateur ; s'il est présent, il doit être une origine loopback valide, sinon refus avant tout travail. Les valeurs malformées, dont `Origin: null`, sont refusées.
+- Ces contrôles limitent le rebinding DNS et les origines externes ; **ils ne bloquent pas un client local ni une page d'origine locale admise**. Loopback n'est pas une authentification.
+- Token statique optionnel, exigé sur chaque requête lorsqu'il est configuré, comparaison en temps constant et jamais journalisé. Sans token, pas d'authentification des clients locaux.
+- Le corpus, l'index et la base source ne sont jamais écrits par le serveur. SQLite ouvert en lecture seule ; ne pas en déduire une absence absolue de contention avec les opérations CLI.
+
+## D2 — Catalogue et responsabilités
+
+| Outil | Paramètres initiaux | Réponse et suite |
 |---|---|---|
-| `sdig_search` | `query` (obligatoire, ≤ 512 car.), `repo`, `session`, `after`, `before`, `model`, `role`, `agent`, `limit` (défaut 10, **max 50**), `ctx` (0–5) | hits groupés par session + `truncated` + `freshness` |
-| `sdig_read` | `session` (obligatoire), `around`, `ctx` (0–**50**), `tail` (≤ **200**), `at` (ancre), `chars` (≤ **20 000**), `full` (bool) | vue bornée + `anchor` + `maskedCount` + `visible`/`total` + `truncated` |
-| `sdig_raw` | `partId`, `head` (lignes, ≤ **2 000**), `maxBytes` (≤ **64 Ko**) | contenu de la preuve — **désactivé par défaut** (D5) |
-| `sdig_status` | — | compteurs, watermark, état de l'index (**sans chemin local**) |
+| `sdig_search` | `query` obligatoire (≤ 512 caractères), `repo`, `session`, `after`, `before`, `model`, `role`, `agent`, `limit` (défaut 10, max 50), `ctx` (0–5) | hits groupés par session, extraits et identifiants complets ; curseur pour les hits suivants ; texte complet via `sdig_read` |
+| `sdig_read` | `session` obligatoire, `around`, `ctx` (0–50), `tail` (1–200), `at`, `chars` (1–20 000), `full` | vue temporelle, fragments de messages et curseur de continuation |
+| `sdig_raw` | `partId` obligatoire, `head` (1–2 000 lignes par page), `maxBytes` (1–65 536 octets par page) | fragments de preuve, `unvetted: true`, continuation ; outil absent par défaut |
+| `sdig_status` | aucun | compteurs, watermark, état de l'index ; aucun chemin local |
 
-Refus par construction : aucune sous-commande d'écriture (`ingest`, `refresh`, `index`), aucun shell,
-aucun accès fichier arbitraire, aucun outil de type `resource`/`prompt` exposant le système de
-fichiers, aucune lecture des fichiers du jeu d'évaluation. Un outil non listé n'existe pas.
+Les trois outils paginés acceptent aussi `cursor`. Pour continuer, l'appelant fournit le curseur seul ; il n'a pas à répéter les paramètres initiaux. Un mélange curseur + paramètres de nouvelle requête est refusé (`invalid_params`). `status` n'a pas de curseur.
 
-## D3 — Bornes et « jamais de coupure silencieuse »
+La recherche fournit un moyen de repérer les sources, **pas un second lecteur intégral**. Un extrait coupé porte son caractère d'extrait et une référence exploitable (session et message) vers `read`. Les résultats synthétiques de titre sont identifiés comme tels et pointent vers la session, pas vers un faux message. Les voisins de contexte sont eux aussi des extraits référencés.
 
-Le principe du change `add-remedy-truncation` s'applique tel quel côté MCP : un agent qui reçoit une
-sortie coupée sans le savoir conclut à tort que l'archive ne contient pas la suite. Donc :
+Les types invalides, nombres non entiers, valeurs négatives et chaînes dépassant leur taille permise sont refusés avant travail. Une limite numérique valide au-dessus du maximum est ramenée au plafond et cette adaptation est signalée. `ctx=0` est valide ; les tailles de pages nulles sont refusées.
 
-- tout résultat borné porte un objet `truncated` : `{ hits?, messages?, chars?, bytes? }` avec les
-  compteurs **exacts** (retenus / totaux), l'action qui élargit (`limit`, `chars`, `head`, `full`) et
-  le **curseur de continuation** `nextCursor` (D8 : signaler ne suffit pas si la suite est
-  inaccessible) ;
-- **plafonds durs** (indépassables par les paramètres) : 50 hits, 200 messages, 20 000 caractères par
-  message, 64 Ko par preuve brute, et un **budget de réponse** de 512 Ko par appel — au-delà, le
-  service tronque et le dit, il ne coupe pas en silence ;
-- `full` lève la limite d'affichage par message **dans la limite** du plafond dur (et le dit quand il
-  bute dessus) ; le budget total reste la borne ultime.
+Aucune sous-commande d'écriture, aucun shell, aucune URL ou chemin de fichier choisi par l'appelant, aucune resource/prompt donnant accès au système de fichiers. Les filtres textuels sont des valeurs de recherche, pas des adresses ou destinations.
 
-## D4 — Ancrage temporel exposé, même sémantique que le CLI
+## D3 — Bornes et compteurs honnêtes
 
-`sdig_read` accepte `at` et applique **exactement** les règles du change `update-read-at` : horodatage
-UTC, validité calendaire stricte, ancre vide refusée, inclusion de l'instant exact, masquage **avant**
-fenêtrage, `maskedCount` + `anchor` dans la réponse, aucune détection de mutation. La logique est
-appelée, pas réimplémentée : une divergence entre CLI et MCP serait un piège pour les agents et un
-défaut de conception.
+Plafonds par appel : **50 hits**, **200 messages distincts**, **50 voisins de contexte par côté dans read** (`ctx≤50`, et `ctx≤5` dans search), **20 000 caractères de texte par message**, **65 536 octets de preuve brute**, **524 288 octets de réponse MCP sérialisée UTF-8**. Le budget total inclut les métadonnées, curseurs et éventuelles représentations dupliquées dans l'enveloppe MCP ; les fragments sont réduits avant sérialisation finale pour le respecter.
 
-## D5 — `raw` désactivé par défaut
+- `truncated` identifie les dimensions coupées, les quantités retenues exactes et, pour chacune, le total exact s'il est connu, sinon `null`. Aucun total estimé, aucun `COUNT` exhaustif obligatoire seulement pour renseigner un compteur.
+- L'absence de total exact ne signifie pas qu'il n'existe plus de résultats. La continuation de liste peut utiliser une lecture d'un élément supplémentaire pour savoir si une page suivante existe, sans compter tous les hits.
+- `nextCursor` est placé dans `truncated.nextCursor` quand la liste des hits ou le contenu de lecture a une suite. Une simple coupure d'extrait de recherche renvoie vers `read` : elle n'exige pas de curseur sur ce texte.
+- `full` augmente le budget de fragment jusqu'au plafond ; il ne désactive ni la borne par message ni le budget total. La suite reste accessible via le curseur.
+- Les comptes `anchor`, `maskedCount`, `visible` et `total` déjà fournis par la lecture CLI conservent leur sémantique ; la permission de total inconnu ne retire pas ces informations disponibles.
 
-Les sorties d'outils brutes sont **non triées** : elles contiennent du stderr, des dumps de
-configuration, parfois des secrets que l'utilisateur a affichés dans une session. En CLI, l'accès est
-explicite et l'opérateur est devant son écran ; exposé comme **outil d'agent**, le même contenu part
-directement dans le contexte d'un modèle, potentiellement chez un fournisseur distant.
+## D4 — Lecture temporelle
 
-- `sdig_raw` n'est **pas** enregistré par défaut ; il s'active par configuration
-  (`expose_raw: true`), et l'activation est journalisée.
-- Quand il est actif, la réponse porte un avertissement explicite (`unvetted: true`) et reste bornée
-  (D3). L'aide de l'outil dit ce qu'il expose.
-- Le CLI garde `sdig raw` sans restriction : c'est l'humain qui lit.
+`sdig_read` appelle la logique partagée de `read --at` : UTC, validation calendaire stricte, ancre vide refusée, instant exact inclus, masquage avant fenêtrage, `anchor` et `maskedCount` explicites. Le curseur conserve l'ancre et la fenêtre ; il ne rend jamais visibles des messages exclus par cette vue.
 
-## D6 — Concurrence, délais, erreurs
+Le masquage n'est pas un contrôle d'accès : une nouvelle requête sans ancre reste possible. Aucune détection ni qualification de mutation d'état. Le lecteur choisit sa borne ; ancrer sur une question peut masquer la réponse postérieure qui documente l'état.
 
-- **Concurrence bornée** : 2 requêtes simultanées par défaut (configurable) ; au-delà, réponse
-  `busy` explicite plutôt qu'une file sans borne — patron `agora-scout`, motivé ici par le fait que le
-  corpus est un fichier SQLite local : saturer ne gagne rien, empiler des requêtes retarde seulement
-  tout le monde.
-- **Délai par appel** : 5 s par défaut (configurable). ⚠️ Les lectures du projet sont **synchrones**
-  (fichiers + better-sqlite3) : un `setTimeout` ou un `Promise.race` **ne peut pas** interrompre le
-  travail en cours. Le délai est donc rendu applicable par deux mécanismes combinés (D9) : travail
-  exécuté dans une **unité interruptible** (worker thread dédié, terminable) et, en première ceinture,
-  requêtes **bornées en travail** (LIMIT SQL, plafonds de lignes et d'octets). À l'expiration, le
-  **créneau de concurrence est rendu immédiatement** et aucun travail orphelin n'est laissé tourner.
-  Correction assumée de la première version de cette spec : « toujours retourner du partiel » était
-  trop contraignant — un partiel vide est une information **fausse**.
-- **Ouvertures en lecture seule** (`mode=ro`, index ouvert en readonly) : le service ne peut pas
-  bloquer le CLI ni corrompre l'index ; il ne prend jamais le verrou d'écriture.
-- **Erreurs structurées** : `{ error: { code, message } }` avec des codes stables (`unknown_session`,
-  `invalid_anchor`, `unknown_part`, `invalid_params`, `busy`, `timeout`, `internal`) — jamais un succès
-  vide ambigu, jamais un message d'erreur qui recopie un contenu d'archive.
+## D5 — Preuves brutes et fichiers
 
-## D7 — Fraîcheur, déterminisme, schéma
+- `sdig_raw` absent du catalogue par défaut ; activation explicite `expose_raw: true`, journalisée. Aucune continuation ne contourne une désactivation ultérieure de l'outil.
+- `partId` est une entrée non fiable : format strict, existence dans les références du corpus, fichier dérivé de cette référence uniquement.
+- Résolution confinée à `raw/`, rejet des traversées, chemins absolus, liens symboliques et fichiers spéciaux. Contrôler le chemin canonique, l'ouverture sans suivi du lien final (`O_NOFOLLOW`) et le type du fichier effectivement ouvert ; expliciter les hypothèses sur les répertoires parents et tester les substitutions de fichier. Ne pas prétendre qu'un `realpath` préalable suffit à supprimer les courses.
+- Réponse `unvetted: true` et bornée, y compris en continuation. Le CLI n'est pas modifié.
 
-- Chaque réponse porte `freshness: { watermarkMessage, watermarkSession, indexMtime, corpusVersion }`
-  (le schéma de corpus est versionné depuis la v0). Un appelant peut ainsi détecter que le corpus a
-  bougé entre deux appels — nécessaire dès qu'un agent enchaîne recherche et lecture.
-- **Déterminisme** : à corpus et paramètres identiques, la réponse est identique (pas d'horloge dans le
-  contenu, pas d'échantillonnage).
-- **Compatibilité** : ajouter un champ est additif (OK) ; retirer ou renommer un champ, ou changer une
-  borne à la baisse, est un changement de spec. Les champs indisponibles sont **absents ou `null`**,
-  jamais inventés (règle héritée d'`agora-scout`).
+## D6 — Concurrence et erreurs
 
-## D8 — Continuation : rien n'est inaccessible
+Deux appels de travail simultanés par défaut (configuration bornée et documentée à l'implémentation). Au-delà : `busy`, sans file non bornée. Un travail en cours d'arrêt occupe toujours son créneau.
 
-Signaler une coupure ne sert à rien si la suite est hors de portée : avec les plafonds de D3, un message
-de 30 000 caractères resterait incomplet même avec `full`, une liste de plus de 50 hits serait coupée,
-et une preuve de plus de 64 Ko tronquée. C'est le défaut que `add-remedy-truncation` a corrigé en CLI —
-le MCP ne doit pas le réintroduire.
+Codes stables des erreurs applicatives : `unknown_session`, `invalid_part`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `forbidden_host`, `busy`, `timeout`, `internal`. Les erreurs ne recopient ni contenu d'archive, ni requête libre, ni secret. Les identifiants ne peuvent être repris dans une erreur ou un journal qu'après validation de leur format. Les erreurs de protocole MCP restent distinctes.
 
-- Chaque réponse tronquée porte `truncated.nextCursor` : un **curseur opaque** que l'appelant renvoie
-  tel quel (`cursor`), pour obtenir la suite **du même contenu** — filtres, ancre, fenêtre et ordre
-  conservés (le curseur les transporte, l'appelant n'a rien à reconstruire).
-- **Aucun plafond caché** : en suivant les curseurs jusqu'à épuisement, on obtient l'intégralité
-  (message entier, liste entière, preuve entière). Le nombre d'appels est borné par la taille du
-  contenu divisée par le plafond par appel — c'est fini et documenté.
-- **Recollement exact** exigé : segments successifs sans doublon, sans trou, sans caractère perdu
-  (testable par concaténation).
-- **Curseur lié à l'état du corpus** : il transporte l'empreinte de fraîcheur (D7). Si le corpus a
-  bougé entre deux segments, réponse `stale_cursor` avec invitation à relancer la requête — servir une
-  suite incohérente serait pire que refuser. Curseur altéré ou étranger (`invalid_cursor`).
-- Le curseur est **inerte** et opaque : il ne modifie rien et n'expose pas son contenu à l'appelant.
+## D7 — Fraîcheur et déterminisme utile
 
-## D9 — Délai réellement applicable
+Les résultats de lecture portent `freshness: { watermarkMessage, watermarkSession, indexMtime, corpusVersion }`, valeurs absentes ou `null` si indisponibles. Pour les continuations, une empreinte de génération vérifiée lie les pages à l'état lu ; ne pas émettre de curseur prétendument sûr si cet état ne peut pas être identifié. Un changement détecté pendant la lecture invalide la page plutôt que d'assembler des générations différentes.
 
-Le délai de D6 n'est crédible que si quelque chose peut **arrêter** le travail. Le projet lit des
-fichiers et du SQLite de façon synchrone : une promesse en course ne coupe rien.
+À corpus/index et paramètres identiques, **les données d'un appel achevé avec succès et leur ordre** sont identiques. Les curseurs opaques, identifiants de requête et durées peuvent différer ; timeout et saturation sont des événements d'exécution, pas des données déterministes. L'ordre des hits doit être stable, avec départage des scores égaux par identifiant ; la pagination précède le regroupement de présentation par session.
 
-- **Ceinture 1 — borner le travail** : chaque requête est bornée en amont (`LIMIT` SQL, plafonds de
-  lignes/octets, pagination par curseur). À plafonds respectés, le temps de réponse est de l'ordre de la
-  mesure du 15/09 (requête type < 11 ms à 5 000 messages) : le délai n'est atteint que dans un cas
-  anormal (disque lent, corpus anormalement gros).
-- **Ceinture 2 — unité interruptible** : le travail d'un appel est exécuté dans un **worker thread
-  dédié** (ou un processus), que le service peut **terminer** à l'expiration. C'est ce qui rend la
-  libération du créneau réelle : pas de travail orphelin qui continue de consommer après un `timeout`.
-- **Résultat** : partiel + `stop_reason: timeout` **seulement si** des éléments exploitables existent
-  déjà (typiquement : les hits obtenus avant la coupure) ; sinon erreur `timeout`. Jamais de partiel
-  vide, jamais de succès muet.
-- Le mécanisme retenu est documenté dans le README (l'exigence de spec le demande) et l'implémentation
-  ne le remplace pas par un minuteur décoratif.
+Ajouter un champ est compatible ; retirer/renommer un champ ou réduire une borne exige un changement de spec. Une donnée indisponible n'est jamais inventée.
 
-## D10 — Journaux : liste autorisée, pas « métadonnées »
+## D8 — Continuation adaptée à chaque outil
 
-« Métadonnées = paramètres » est trop large : `query` peut être une citation privée, un nom de fichier
-ou un secret recherché ; l'ancre d'un message ou un identifiant de preuve sont des identifiants, mais
-un texte libre ne l'est pas. La règle devient une **liste autorisée** :
+- `search` : pagination **de la liste des hits**, filtres et ordre conservés. Pas de texte intégral fragmenté dans les hits ni dans leur contexte ; référence vers `read` pour ce besoin.
+- `read` : pagination de la vue choisie et fragmentation des messages longs, avec identifiant de message, offset et indicateur de fin de message. Une même vue peut couvrir plusieurs pages ; aucun contenu de cette vue ne devient inaccessible à cause d'un plafond.
+- `raw` actif : fragmentation de la preuve avec offsets explicites. `head` et `maxBytes` bornent chaque page, pas la quantité totale récupérable.
+- Le schéma d'implémentation documentera les unités des offsets (caractères ou octets) et l'encodage. Tests de recollement exact : pas de trou, doublon ou caractère Unicode perdu, y compris accents/emoji et coupure par budget global. La preuve brute se reconstitue sans perte d'octet.
+- Curseur opaque, inerte, validé et lié à l'outil, à la requête initiale, à sa position et à la génération. Curseur altéré/étranger : `invalid_cursor` ; génération changée : `stale_cursor`, relancer la requête initiale.
+- L'identité binaire des curseurs entre deux appels n'est pas exigée. Si l'implémentation stocke un état de curseur, sa durée de vie et ses bornes mémoire seront documentées ; un curseur perdu/expiré est refusé explicitement, jamais réinterprété comme une nouvelle requête.
 
-- autorisés : nom d'outil, paramètres **numériques** (limit, ctx, tail, chars, head, offsets), durée,
-  compteurs (retenus/totaux), code d'erreur, et identifiants techniques opaques (session, preuve) —
-  utiles au support et non porteurs de contenu ;
-- interdits par défaut : `query`, tout texte libre, tout contenu de message ou de sortie d'outil ;
-- mode debug `log_content: true` : jamais par défaut, activation tracée dans le journal.
+## D9 — Timeout simple, arrêt réel
 
-## D11 — Confinement HTTP, identifiants de preuve, contenu non fiable
+Délai par appel : 5 s par défaut (configurable). Le travail synchrone de lecture/SQLite doit être isolé du serveur HTTP dans une unité dont l'arrêt peut être demandé et observé (worker ou processus, choix justifié et testé sur la pile réelle). Un `Promise.race` seul n'arrête rien ; un `LIMIT` SQL borne les résultats, **pas la durée du calcul**.
 
-Trois durcissements demandés avant l'implémentation :
+À expiration : erreur `timeout`, **aucun résultat partiel ni curseur issu du calcul interrompu** ; demande d'arrêt du travail. Le créneau n'est rendu qu'après confirmation de l'arrêt effectif. Pendant cette phase, une saturation continue de donner `busy`. Les résultats tardifs sont ignorés. Si l'arrêt échoue, l'unité reste indisponible et l'incident est signalé : ne pas lancer du travail supplémentaire en prétendant le créneau libre.
 
-- **Loopback ≠ authentification** : validation stricte de l'en-tête `Host` (formes loopback
-  attendues uniquement) et refus de tout `Origin` non loopback — protection contre le rebinding DNS et
-  les appels depuis une page web locale. Le token statique optionnel devient alors une **vraie**
-  barrière quand il est configuré (exigé sur chaque requête, comparaison en temps constant) ; sans
-  token, la documentation dit que la seule barrière est le loopback.
-- **`partId` = entrée non fiable** : format strict, existence vérifiée dans le corpus, chemin **dérivé**
-  de l'identifiant (jamais fourni par l'appelant), résolution confinée au répertoire des sorties
-  brutes avec refus des liens symboliques et des fichiers spéciaux (`realpath` + ouverture
-  `O_NOFOLLOW`). Même logique que le confinement des chemins d'`agora-scout` (TOCTOU compris).
-- **Contenu = données, jamais instructions** : les descriptions des outils MCP rappellent explicitement
-  que messages, commandes et sorties d'outils peuvent contenir n'importe quel texte, y compris des
-  consignes adressées au modèle, et qu'elles ne doivent être ni suivies ni exécutées. Le service, lui,
-  n'exécute rien : la règle est portée par les descriptions (contrat visible par le modèle appelant) et
-  par le fait qu'aucun outil ne prend de commande en entrée.
+La v1 ne promet pas une terminaison instantanée à la milliseconde. Tests : timeout sans payload partiel, arrêt/absence de travail orphelin, maintien du plafond de concurrence pendant l'arrêt, réutilisation après confirmation, comportement avec les appels natifs SQLite. Des plafonds de travail restent utiles, sans servir de preuve de délai maximal.
 
-## D12 — Journaux et supervision
+## D10 — Confidentialité et contenu non fiable
 
-- Journaux = **liste autorisée** (D10) : nom d'outil, paramètres **numériques** (limites, fenêtres,
-  offsets), identifiants techniques opaques (session, preuve), compteurs, durée, code d'erreur. Tout
-  **texte libre** est exclu par défaut — en particulier `query` : une requête est du contenu (citation
-  privée, nom de fichier, secret recherché) et n'a rien à faire dans un journal. Un mode debug
-  (`log_content: true`, jamais par défaut, activation annoncée) peut les ajouter.
-- Démarrage par le **manifeste Termux** (`agora_server_debian session-dig …`), logs
-  `~/.agora/log/session-dig.log`, arrêt par `agora_stop` — la modification du manifeste est une
-  **décision propriétaire** (comme pour `agora-scout`), pas une conséquence automatique de ce change.
-- Le service s'arrête proprement : fermeture des bases, aucune écriture, aucun fichier temporaire
-  persistant.
+Liste autorisée des journaux : nom d'outil, paramètres numériques de limites/fenêtres/offsets, identifiants techniques validés (session/preuve), compteurs connus, durée, code d'erreur. Pas de `query`, filtre libre, curseur, token, texte de message ni sortie brute. Debug `log_content: true` uniquement sur activation explicite annoncée ; jamais de secret d'authentification journalisé.
+
+**Toute lecture peut exposer des secrets**, y compris les messages ordinaires. Aucun filtrage de secrets promis. Désactiver `raw` réduit une surface, mais n'anonymise pas les résultats. Le service ne contacte aucun modèle ; le client peut transmettre ses réponses au fournisseur du modèle appelant. Une limite de taille n'est pas une protection contre la présence d'un secret.
+
+Les descriptions des outils rappellent que messages, commandes et sorties sont des **données non fiables**, jamais des instructions à suivre ou à exécuter. Aucun outil du service n'exécute ce contenu.
+
+Aucun outil ne lit les fichiers du jeu d'évaluation. Cette fermeture ne garantit pas l'absence, dans l'historique, d'extraits éventuellement copiés auparavant ; le service ne prétend pas les détecter.
+
+## D11 — Supervision et livraison
+
+Lancement manuel documenté, puis intégration cliente MCP sur fixtures. Ajout au manifeste Termux `~/.config/agora/servers.sh` et activation durable uniquement sur décision propriétaire distincte. Logs sous `~/.agora/log/`. Arrêt propre des unités de travail et des bases, aucune écriture dans le corpus/index/base source, aucun temporaire persistant laissé par le service.
+
+Le change d'implémentation vérifiera le SDK et ses contrats avant installation. Ni code réseau, ni dépendance, ni démarrage ne découlent automatiquement de la validation de cette spec.

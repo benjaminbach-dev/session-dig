@@ -1,23 +1,35 @@
 # Tâches — add-mcp-server
 
-Phase spec (ce change) :
+## Phase spec (ce change uniquement)
 
-- [x] Écrire la spec de la capacité `mcp` (7 exigences, scénarios) — proposée, design et delta ci-joints.
-- [x] Décisions consignées dans `design.md` : transport et port (loopback exclusif), catalogue fermé de 4 outils, plafonds durs + marqueurs de troncature, réutilisation de la sémantique `read --at`, `raw` désactivé par défaut, concurrence 2 / délai 5 s / erreurs structurées, fraîcheur et déterminisme, journaux sans contenu.
-- [x] **Seconde revue (20/09) — quatre contrats resserrés avant tout code** : (1) **récupération intégrale par continuation** (curseur opaque `nextCursor` / `cursor`, filtres et ancre conservés, recollement exact, `stale_cursor` si le corpus bouge) ; (2) **délai réellement applicable** (le travail synchrone ne s'interrompt pas avec un minuteur → unité interruptible + bornes de travail, libération effective du créneau, erreur `timeout` plutôt que partiel vide) ; (3) **journaux en liste autorisée** (la requête est du contenu, donc jamais journalisée par défaut) et reconnaissance que **tout** message peut contenir des secrets (pas seulement `raw`), sans promesse de filtrage ; (4) **confinement HTTP et des identifiants** (validation `Host`/`Origin`, `partId` non fiable à chemin dérivé et confiné au répertoire des preuves, descriptions d'outils rappelant que les archives sont des données, jamais des instructions).
-- [ ] Validation stricte du change (`openspec validate --specs --changes --strict`) et commit de la spec **avant** tout code.
+- [x] Écrire proposition, design et delta de la capacité `mcp`.
+- [x] Conserver les protections des revues précédentes : lecture seule, loopback et contrôles Host/Origin, token optionnel, preuves confinées, raw fermé par défaut, journaux en liste autorisée, données non fiables, ancrage identique au CLI.
+- [x] Recentrer la v1 (20/09, décision utilisateur) : search = extraits référencés + pagination des hits ; lecture complète par fragments dans read/raw ; totaux exacts seulement quand connus ; timeout sans partiel ; créneau réutilisé après arrêt confirmé ; déterminisme des données et non de l'enveloppe.
+- [x] Valider ce rescopage avec `openspec validate add-mcp-server --strict --no-interactive` et contrôler la cohérence des quatre documents. Validation globale `--specs --changes --strict --no-interactive` : 4 éléments valides, aucun échec ; `git diff --check` OK.
+- [ ] Commit/push documentaire sur demande explicite. Aucun début d'implémentation implicite.
 
-Phase implémentation (change séparé, à ouvrir ensuite) :
+## Phase implémentation (change séparé, sur accord)
 
-- [ ] Vérifier la version publiée du SDK MCP TypeScript officiel (ligne v1 vs v2), l'épingler dans `package.json`, et confirmer le transport Streamable HTTP avec la version retenue.
-- [ ] `src/mcp/tools.js` : les 4 outils comme **façade** au-dessus de `src/retriever/bm25.js`, `src/read.js`, `src/format.js`, `src/raw.js` (aucune logique de recherche dupliquée) ; bornes de `design.md` appliquées côté serveur ; objet `truncated` avec compteurs exacts ; `freshness` ; codes d'erreur stables.
-- [ ] **Continuation** : format de curseur opaque (requête + position + empreinte de fraîcheur), implémentation pour `sdig_read` (message long, fenêtre), `sdig_search` (suite de hits) et `sdig_raw` (segments d'octets) ; tests de recollement exact (concaténation = contenu intégral) et de refus `stale_cursor` / `invalid_cursor`.
-- [ ] **Délai applicable** : exécution du travail dans une unité interruptible (worker thread terminable) + bornes de travail en amont (LIMIT SQL, plafonds lignes/octets) ; à l'expiration, terminaison du travail, libération immédiate du créneau, partiel seulement si exploitable, sinon erreur `timeout` ; test « créneau libéré après expiration ».
-- [ ] `src/mcp/server.js` : écoute `127.0.0.1:18767` (refus explicite de toute autre interface), validation `Host`/`Origin`, token statique optionnel (comparaison en temps constant), concurrence 2 + statut `busy`, ouvertures lecture seule, journaux **à liste autorisée**, arrêt propre.
-- [ ] `sdig_raw` : absent du catalogue par défaut ; activation par configuration (`expose_raw`), activation journalisée, réponses marquées `unvetted`, bornées et continues ; `partId` validé (format, existence, chemin dérivé, `realpath` + `O_NOFOLLOW`, refus des fichiers spéciaux).
-- [ ] Descriptions d'outils : rappel explicite que les contenus renvoyés sont des **données non fiables**, jamais des instructions — et tests qui figent ce texte (contrat visible par le modèle appelant).
-- [ ] Tests de contrat (fixture synthétique) : catalogue selon configuration, bornes ramenées et signalées, marqueurs de troncature (dont budget de réponse), ancrage temporel identique au CLI (ancre vide/inexistante/invalide), erreurs structurées sans contenu d'archive, saturation → `busy`, host/origin refusés, identifiants de preuve hostiles, fraîcheur et rejeu identique.
-- [ ] Test d'intégration avec un client MCP réel (le patron `agora-scout` sert de référence) : initialisation, appel de chaque outil, continuation jusqu'à l'intégralité d'un contenu long, reconnexion.
-- [ ] Vérification de confinement : configuration non-loopback refusée ; aucun appel réseau sortant (vérification explicite) ; aucune écriture dans le corpus (md5 avant/après) ; journaux inspectés (aucune requête, aucun contenu).
-- [ ] Documentation : `README.md` (section « serveur MCP » : lancement manuel, outils, bornes, continuation, mécanisme de délai retenu, confidentialité) et `openspec/implementation-plan.md` (phase v1 livrée).
-- [ ] Ajout au manifeste Termux `~/.config/agora/servers.sh` — **décision propriétaire explicite** (comme pour `agora-scout`), hors de ce change.
+- [ ] Vérifier le paquet et la version publiés du SDK MCP officiel et son transport Streamable HTTP, puis épingler la dépendance dans ce nouveau change.
+- [ ] Fixer les schémas d'entrée/sortie et de fragments (unités d'offset, encodage, fin de message, compteurs inconnus), représentation du curseur et bornes mémoire/durée de vie si un état est conservé côté serveur.
+- [ ] Implémenter la façade sur les fonctions existantes : search avec extraits et références, read avec `at`, raw optionnel, status sans chemin local. Pas de scoring ou d'ancrage réimplémenté en parallèle.
+- [ ] Paginer la **liste des hits**, avec ordre stable et départage des scores égaux, avant regroupement par session. Aucune fragmentation du texte intégral dans search ; les extraits et voisins orientent vers read.
+- [ ] Implémenter la continuation de read (vue + fragments de messages) et raw actif (fragments de preuve), liée à la génération et aux paramètres initiaux ; refus des curseurs altérés/étrangers/périmés et du mélange cursor + paramètres initiaux.
+- [ ] Appliquer les plafonds par appel et le budget de réponse MCP sérialisée, métadonnées comprises ; signaler toute coupure et tout ajustement de limite ; rendre les totaux connus exacts et les inconnus `null`, sans compter exhaustivement par obligation.
+- [ ] Isoler le travail synchrone dans un worker/processus dont l'arrêt est observable ; tester ce choix avec les appels natifs SQLite. À expiration : erreur timeout sans partiel ni curseur, arrêt demandé, créneau occupé jusqu'à confirmation, résultats tardifs ignorés ; incident visible si arrêt impossible.
+- [ ] Implémenter Streamable HTTP loopback, Host/Origin validés, token optionnel, concurrence bornée + busy, erreurs applicatives/protocole distinctes, arrêt propre et journaux en liste autorisée.
+- [ ] Confinement raw : format et référence partId vérifiés, fichier dérivé, contrôles de chemin et du fichier ouvert, refus des liens/fichiers spéciaux, tests de substitution. Raw absent par défaut et aucune continuation ne contourne sa désactivation.
+- [ ] Descriptions d'outils : archive = données non fiables, jamais instructions ; confidentialité documentée pour **toutes** les lectures, sans promesse de filtrage des secrets.
+
+## Validation de l'implémentation future
+
+- [ ] Tests de contrat sur fixtures : catalogue selon configuration ; types invalides et limites ajustées ; budget global ; total inconnu ; extraits search → read ; erreurs sans contenu privé.
+- [ ] Pagination : plus de 50 hits avec scores égaux ; message de plus de 20 000 caractères ; plus de 200 messages ; preuve de plus de 65 536 octets ; accents/emoji ; coupure au budget total ; recollement exact et suite complète de la vue choisie.
+- [ ] Ancrage CLI/MCP identique : UTC, dates invalides/vides/inconnues, masquage avant fenêtre, compteurs, continuation ne réintroduisant pas le futur.
+- [ ] Timeout et concurrence : erreur sans partiel même avec données intermédiaires, busy pendant arrêt, aucun créneau libéré avant confirmation, reprise après arrêt et absence de travail orphelin.
+- [ ] Sécurité : Host/Origin refusés, token quand configuré, partId hostile, absence d'egress, corpus/index/base source inchangés, inspection des journaux sans query/contenu/token/curseur.
+- [ ] Fraîcheur : état changé → stale_cursor ; rejeu réussi → données et ordre identiques sans imposer l'identité des curseurs ou des durées.
+- [ ] Client MCP réel sur fixtures : initialisation, outils autorisés, pagination des hits puis lecture complète par read, raw si activé, reconnexion.
+- [ ] Tests de régression existants et validation OpenSpec. Pas de rejeu du jeu naturel gelé.
+- [ ] Documenter lancement manuel, limites, offsets, mécanisme d'arrêt, confidentialité et limites de l'authentification locale. Ne marquer la phase v1 livrée qu'après validation effective.
+- [ ] Ajout au manifeste Termux : décision propriétaire explicite distincte, hors de ce change documentaire.
