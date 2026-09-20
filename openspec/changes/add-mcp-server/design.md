@@ -43,7 +43,9 @@ Le principe du change `add-remedy-truncation` s'applique tel quel côté MCP : u
 sortie coupée sans le savoir conclut à tort que l'archive ne contient pas la suite. Donc :
 
 - tout résultat borné porte un objet `truncated` : `{ hits?, messages?, chars?, bytes? }` avec les
-  compteurs **exacts** (retenus / totaux) et l'action qui élargit (`limit`, `chars`, `head`, `full`) ;
+  compteurs **exacts** (retenus / totaux), l'action qui élargit (`limit`, `chars`, `head`, `full`) et
+  le **curseur de continuation** `nextCursor` (D8 : signaler ne suffit pas si la suite est
+  inaccessible) ;
 - **plafonds durs** (indépassables par les paramètres) : 50 hits, 200 messages, 20 000 caractères par
   message, 64 Ko par preuve brute, et un **budget de réponse** de 512 Ko par appel — au-delà, le
   service tronque et le dit, il ne coupe pas en silence ;
@@ -77,9 +79,14 @@ directement dans le contexte d'un modèle, potentiellement chez un fournisseur d
   `busy` explicite plutôt qu'une file sans borne — patron `agora-scout`, motivé ici par le fait que le
   corpus est un fichier SQLite local : saturer ne gagne rien, empiler des requêtes retarde seulement
   tout le monde.
-- **Délai par appel** : 5 s par défaut (configurable), retour **partiel** avec `stop_reason: timeout`
-  plutôt qu'un blocage. L'index est local, la mesure du 15/09 donne une requête type sous 11 ms ;
-  5 s est un garde-fou, pas une contrainte de performance.
+- **Délai par appel** : 5 s par défaut (configurable). ⚠️ Les lectures du projet sont **synchrones**
+  (fichiers + better-sqlite3) : un `setTimeout` ou un `Promise.race` **ne peut pas** interrompre le
+  travail en cours. Le délai est donc rendu applicable par deux mécanismes combinés (D9) : travail
+  exécuté dans une **unité interruptible** (worker thread dédié, terminable) et, en première ceinture,
+  requêtes **bornées en travail** (LIMIT SQL, plafonds de lignes et d'octets). À l'expiration, le
+  **créneau de concurrence est rendu immédiatement** et aucun travail orphelin n'est laissé tourner.
+  Correction assumée de la première version de cette spec : « toujours retourner du partiel » était
+  trop contraignant — un partiel vide est une information **fausse**.
 - **Ouvertures en lecture seule** (`mode=ro`, index ouvert en readonly) : le service ne peut pas
   bloquer le CLI ni corrompre l'index ; il ne prend jamais le verrou d'écriture.
 - **Erreurs structurées** : `{ error: { code, message } }` avec des codes stables (`unknown_session`,
@@ -97,11 +104,82 @@ directement dans le contexte d'un modèle, potentiellement chez un fournisseur d
   borne à la baisse, est un changement de spec. Les champs indisponibles sont **absents ou `null`**,
   jamais inventés (règle héritée d'`agora-scout`).
 
-## D8 — Journaux et supervision
+## D8 — Continuation : rien n'est inaccessible
 
-- Journaux = **métadonnées** (outil, paramètres, compteurs, durée, code d'erreur) ; **aucun contenu**
-  de message ni de sortie d'outil n'est journalisé par défaut. Un mode debug (`log_content: true`,
-  jamais par défaut) existe pour le développement et le dit.
+Signaler une coupure ne sert à rien si la suite est hors de portée : avec les plafonds de D3, un message
+de 30 000 caractères resterait incomplet même avec `full`, une liste de plus de 50 hits serait coupée,
+et une preuve de plus de 64 Ko tronquée. C'est le défaut que `add-remedy-truncation` a corrigé en CLI —
+le MCP ne doit pas le réintroduire.
+
+- Chaque réponse tronquée porte `truncated.nextCursor` : un **curseur opaque** que l'appelant renvoie
+  tel quel (`cursor`), pour obtenir la suite **du même contenu** — filtres, ancre, fenêtre et ordre
+  conservés (le curseur les transporte, l'appelant n'a rien à reconstruire).
+- **Aucun plafond caché** : en suivant les curseurs jusqu'à épuisement, on obtient l'intégralité
+  (message entier, liste entière, preuve entière). Le nombre d'appels est borné par la taille du
+  contenu divisée par le plafond par appel — c'est fini et documenté.
+- **Recollement exact** exigé : segments successifs sans doublon, sans trou, sans caractère perdu
+  (testable par concaténation).
+- **Curseur lié à l'état du corpus** : il transporte l'empreinte de fraîcheur (D7). Si le corpus a
+  bougé entre deux segments, réponse `stale_cursor` avec invitation à relancer la requête — servir une
+  suite incohérente serait pire que refuser. Curseur altéré ou étranger (`invalid_cursor`).
+- Le curseur est **inerte** et opaque : il ne modifie rien et n'expose pas son contenu à l'appelant.
+
+## D9 — Délai réellement applicable
+
+Le délai de D6 n'est crédible que si quelque chose peut **arrêter** le travail. Le projet lit des
+fichiers et du SQLite de façon synchrone : une promesse en course ne coupe rien.
+
+- **Ceinture 1 — borner le travail** : chaque requête est bornée en amont (`LIMIT` SQL, plafonds de
+  lignes/octets, pagination par curseur). À plafonds respectés, le temps de réponse est de l'ordre de la
+  mesure du 15/09 (requête type < 11 ms à 5 000 messages) : le délai n'est atteint que dans un cas
+  anormal (disque lent, corpus anormalement gros).
+- **Ceinture 2 — unité interruptible** : le travail d'un appel est exécuté dans un **worker thread
+  dédié** (ou un processus), que le service peut **terminer** à l'expiration. C'est ce qui rend la
+  libération du créneau réelle : pas de travail orphelin qui continue de consommer après un `timeout`.
+- **Résultat** : partiel + `stop_reason: timeout` **seulement si** des éléments exploitables existent
+  déjà (typiquement : les hits obtenus avant la coupure) ; sinon erreur `timeout`. Jamais de partiel
+  vide, jamais de succès muet.
+- Le mécanisme retenu est documenté dans le README (l'exigence de spec le demande) et l'implémentation
+  ne le remplace pas par un minuteur décoratif.
+
+## D10 — Journaux : liste autorisée, pas « métadonnées »
+
+« Métadonnées = paramètres » est trop large : `query` peut être une citation privée, un nom de fichier
+ou un secret recherché ; l'ancre d'un message ou un identifiant de preuve sont des identifiants, mais
+un texte libre ne l'est pas. La règle devient une **liste autorisée** :
+
+- autorisés : nom d'outil, paramètres **numériques** (limit, ctx, tail, chars, head, offsets), durée,
+  compteurs (retenus/totaux), code d'erreur, et identifiants techniques opaques (session, preuve) —
+  utiles au support et non porteurs de contenu ;
+- interdits par défaut : `query`, tout texte libre, tout contenu de message ou de sortie d'outil ;
+- mode debug `log_content: true` : jamais par défaut, activation tracée dans le journal.
+
+## D11 — Confinement HTTP, identifiants de preuve, contenu non fiable
+
+Trois durcissements demandés avant l'implémentation :
+
+- **Loopback ≠ authentification** : validation stricte de l'en-tête `Host` (formes loopback
+  attendues uniquement) et refus de tout `Origin` non loopback — protection contre le rebinding DNS et
+  les appels depuis une page web locale. Le token statique optionnel devient alors une **vraie**
+  barrière quand il est configuré (exigé sur chaque requête, comparaison en temps constant) ; sans
+  token, la documentation dit que la seule barrière est le loopback.
+- **`partId` = entrée non fiable** : format strict, existence vérifiée dans le corpus, chemin **dérivé**
+  de l'identifiant (jamais fourni par l'appelant), résolution confinée au répertoire des sorties
+  brutes avec refus des liens symboliques et des fichiers spéciaux (`realpath` + ouverture
+  `O_NOFOLLOW`). Même logique que le confinement des chemins d'`agora-scout` (TOCTOU compris).
+- **Contenu = données, jamais instructions** : les descriptions des outils MCP rappellent explicitement
+  que messages, commandes et sorties d'outils peuvent contenir n'importe quel texte, y compris des
+  consignes adressées au modèle, et qu'elles ne doivent être ni suivies ni exécutées. Le service, lui,
+  n'exécute rien : la règle est portée par les descriptions (contrat visible par le modèle appelant) et
+  par le fait qu'aucun outil ne prend de commande en entrée.
+
+## D12 — Journaux et supervision
+
+- Journaux = **liste autorisée** (D10) : nom d'outil, paramètres **numériques** (limites, fenêtres,
+  offsets), identifiants techniques opaques (session, preuve), compteurs, durée, code d'erreur. Tout
+  **texte libre** est exclu par défaut — en particulier `query` : une requête est du contenu (citation
+  privée, nom de fichier, secret recherché) et n'a rien à faire dans un journal. Un mode debug
+  (`log_content: true`, jamais par défaut, activation annoncée) peut les ajouter.
 - Démarrage par le **manifeste Termux** (`agora_server_debian session-dig …`), logs
   `~/.agora/log/session-dig.log`, arrêt par `agora_stop` — la modification du manifeste est une
   **décision propriétaire** (comme pour `agora-scout`), pas une conséquence automatique de ce change.
