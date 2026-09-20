@@ -58,13 +58,80 @@ Deux variantes, toujours annoncées dans le rapport :
 
 Deux axes séparés, parce qu'ils échouent séparément :
 
-1. **rappel** — la session source est-elle citée ?
-2. **fidélité** — les faits attendus sont-ils présents, sans affirmation interdite ni invention ?
+1. **rappel** — la session source est-elle citée (identifiant complet, titre sans ambiguïté, ou
+   identifiant tronqué si l'identifiant complet figure ailleurs dans la même réponse) ? En variante A,
+   une réponse juste mais non sourcée n'a pas fait le travail demandé : rappel nul ;
+2. **fidélité** — les faits attendus sont-ils présents et corrects, sans affirmation interdite
+   (`mustNot`) ni fait inventé ? L'abstention honnête passe avant l'invention : une abstention est un
+   échec de rappel, une invention est un échec de fidélité *et* un signal de fiabilité négatif.
 
-Une abstention honnête vaut mieux qu'une invention : l'abstention est un échec de rappel,
-l'invention est un échec de fidélité *et* un signal de fiabilité négatif. Rapporter les scores par
-étiquette de spécificité (`high` seul, puis `high`+`medium`, puis ensemble) — un score global qui
-mélange culture générale et archive ne dit rien.
+**Unité de notation = le fait attendu.** Chaque entrée d'`expect` reçoit ✔ (restitué), ~ (partiel) ou
+✖ (absent) ; le **tableau par question** (rappel + une colonne par fait) est la donnée première du
+rapport, les listes agrégées n'en sont qu'une vue. Buckets, sans label intermédiaire :
+
+| Bucket | Définition |
+|---|---|
+| **pleine** | tous les faits ✔ |
+| **partielle** | au moins un fait non-✔ **et** au moins un fait restitué (✔ ou ~) |
+| **échec** | aucune restitution (ni ✔ ni ~) |
+
+« quasi-pleine », « faible » et autres nuances ne sont **pas** des buckets : la restitution partielle
+se lit dans le tableau, pas dans un label (l'expérience du 19/09 a montré que les labels dérivent).
+Rapporter les scores par étiquette de spécificité (`high` seul, puis `high`+`medium`, puis ensemble) —
+un score global qui mélange culture générale et archive ne dit rien.
+
+Deux signaux propres, comptés à part des buckets :
+
+- **fausses méta-affirmations** — « l'archive n'en conserve pas davantage », « non récupérable »,
+  « confirme le contenu ci-dessus », alors que le texte intégral existe (extraction à l'appui) : le
+  fait est ✖, l'affirmation est tracée et agrégée en taux propre. Plus grave qu'un détail perdu (elle
+  décrit faussement la source), ce n'est pas une invention ;
+- **dérives temporelles** — une question d'état se répond **à l'instant où elle a été posée** :
+  restituer un état postérieur (mutation plus tard dans la session, ou session plus récente) est un
+  échec de fidélité temporel, documenté comme tel, jamais compté comme invention.
+
+Une question qui oriente une décision d'implémentation sort du jeu (voir Règle d'or ci-dessous). Un
+écart documenté (question légitimement ambiguë, réponse devenue fausse depuis) est consigné et exclu
+de l'agrégat, jamais compté comme échec silencieux.
+
+## Auditer les accès (obligatoire en variante A)
+
+La variante A n'accède à l'archive que via `sdig`. Le dépôt embarque le filet de détection :
+
+```bash
+node scripts/audit-toolcalls.mjs <dossier-de-run>            # markdown, à annexer au rapport
+node scripts/audit-toolcalls.mjs <dossier> --strict          # exit 1 si déviation détectée
+node scripts/audit-toolcalls.mjs <dossier> --out audit.md    # écrit le rapport d'audit
+node scripts/audit-toolcalls.mjs --motifs                    # liste les motifs épinglés
+```
+
+Il liste, par question, les commandes qui touchent directement l'archive (fichiers du corpus,
+`opencode.db`, `index.db`, invocations sqlite, `sdig ingest|refresh`) et celles qui lisent les
+fichiers du jeu de test — ces dernières **invalident** l'exécution au lieu de la noter. Les motifs
+sont épinglés dans le script et leur empreinte figure dans l'audit : toute évolution passe par un
+commit, et deux audits ne se comparent que si l'empreinte coïncide.
+
+⚠️ C'est un **filet de détection a posteriori, pas une garantie d'exclusivité d'accès** : « rien de
+détecté » n'est pas la preuve que rien a eu lieu, et l'audit ne voit que les appels d'outils
+enregistrés. Quand le harnais permet de restreindre réellement les accès (outils filtrés,
+environnement confiné, wrapper n'exposant que `sdig`), la restriction réelle est préférée — l'audit
+ne fait plus que confirmer. Un rapport sans audit est déclaré « non audité » en toutes lettres.
+
+## Conditions épinglées et réponses récupérées
+
+Un rapport n'est comparable à un autre que s'il porte ses conditions : md5 du corpus au début **et**
+à la fin, version de `sdig`, version du serveur d'agent, hash du template de prompt, graine d'ordre,
+version du jeu et variante. Deux runs sans conditions épinglées ne comparent rien.
+
+Une réponse dont la connexion a été perdue alors que le serveur d'agent avait fini le traitement peut
+être **récupérée** via le transcript de la session d'examen — à trois conditions : elle porte le flag
+`recovered`, l'extrait de transcript qui la fonde est archivé à côté du rapport, et le nombre de
+réponses récupérées figure dans le rapport. Sans ces preuves, elle est traitée comme manquante.
+
+Le premier rapport noté d'un jeu gelé est **relu par un second correcteur** indépendant (toutes les
+réponses non pleines, les écarts de procédure, un échantillon de réponses pleines). Chaque désaccord
+est arbitré contre le corpus par extraction du texte source, citation à l'appui. Une re-notation ne
+fait jamais rejouer le jeu : elle relit des réponses existantes, sans coût modèle.
 
 ## Règle d'or
 
