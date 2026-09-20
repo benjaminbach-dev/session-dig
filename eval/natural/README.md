@@ -105,11 +105,28 @@ node scripts/audit-toolcalls.mjs <dossier> --out audit.md    # écrit le rapport
 node scripts/audit-toolcalls.mjs --motifs                    # liste les motifs épinglés
 ```
 
-Il liste, par question, les commandes qui touchent directement l'archive (fichiers du corpus,
-`opencode.db`, `index.db`, invocations sqlite, `sdig ingest|refresh`) et celles qui lisent les
-fichiers du jeu de test — ces dernières **invalident** l'exécution au lieu de la noter. Les motifs
-sont épinglés dans le script et leur empreinte figure dans l'audit : toute évolution passe par un
-commit, et deux audits ne se comparent que si l'empreinte coïncide.
+Ce que l'audit regarde — **la commande réellement invoquée, jamais la simple présence d'un mot** :
+
+- chaque segment (pipeline, `&&`, `;`) est découpé en commande, arguments et redirections ; quand
+  cette commande est `sdig`, seules une sous-commande mutante (`ingest`, `refresh`) ou une
+  redirection/argument pointant un fichier de l'archive sont des déviations. D'où :
+  `sdig search "ingest"` = recherche légitime, `sdig ingest` = écriture, `grep sdig events.jsonl` =
+  lecture directe, `sdig read ses_x < events.jsonl` = lecture par redirection ;
+- les invocations sdig légitimes (`search`, `read`, `raw`, `status`, `index`) sont exemptées, sauf
+  leurs redirections et les chemins passés en argument positionnel ;
+- les **formes indécidables** (commande dynamique, `$(…)`, `xargs`, `eval`, option pointant un
+  chemin explicite) sont listées **« à examiner »** : ni déclarées propres, ni accusées — à trancher
+  à la main dans le rapport ;
+- la lecture des fichiers du jeu de test est listée comme **invalidante** (exécution exclue de
+  l'agrégat, pas notée).
+
+Ce que l'audit fait d'une entrée qu'il ne sait pas lire : il ne la compte **pas** comme propre. Un
+JSON illisible ou un appel dont la commande n'est pas extractible est compté, listé, et fait basculer
+le rapport en **« audit incomplet »** (sortie non nulle en `--strict`). « Aucune déviation détectée »
+ne se dit que d'un **audit complet**.
+
+Les motifs sont épinglés dans le script et leur empreinte figure dans l'audit : toute évolution passe
+par un commit, et deux audits ne se comparent que si l'empreinte coïncide.
 
 ⚠️ C'est un **filet de détection a posteriori, pas une garantie d'exclusivité d'accès** : « rien de
 détecté » n'est pas la preuve que rien a eu lieu, et l'audit ne voit que les appels d'outils
