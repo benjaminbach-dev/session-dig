@@ -1,10 +1,12 @@
-# Corpus et données locales — jamais committés
-corpus/
-raw/
+# Corpus et données locales — jamais committés (motifs ancrés à la racine le 20/09 :
+# un `corpus/` non ancré avalait aussi openspec/specs/corpus/ — la spec fondatrice
+# corpus et les deltas de spec du même nom n'ont jamais été commités avant cela)
+/corpus/
+/raw/
 *.db
 *.db-shm
 *.db-wal
-.session-dig/
+/.session-dig/
 
 # Jeu de test naturel (données privées, jamais publiées — voir openspec/specs/natural-eval)
 eval/natural/*.jsonl
