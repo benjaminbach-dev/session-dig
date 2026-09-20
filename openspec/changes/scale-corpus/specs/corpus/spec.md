@@ -11,7 +11,7 @@
 
 Le corpus SHALL être composé d'enregistrements canoniques **inchangés depuis la v1** : un événement par message, portant `id`, `sessionId`, `ts` (ms epoch), `role` (`user` ou `assistant`), `text`, `model` (`providerID`, `modelID`), `agent`, `repo`, `tokens` (`in`, `out`, `reasoning`, `cacheRead`, `cacheWrite`) et `cost`. Un événement MAY porter un champ `toolCalls` — liste de `{tool, cmd, exitCode?, rawRef?}` — pour les messages contenant des appels d'outils (décision du 16/09 : liste et non champ unique, les données réelles montrant jusqu'à 34 appels par message) ; `exitCode` est omis quand la source ne l'expose pas ; `rawRef` référence la sortie brute dans `raw/` quand elle existe. Une session SHALL contenir : `id`, `schemaVersion`, `title`, `directory`, `repo`, `tsCreated`, `tsUpdated`, `cost`, `tokens`. Chaque ligne SHALL porter `schemaVersion: 1` : le schéma des enregistrements ne change pas avec ce change.
 
-Décision du 20/09 (change `scale-corpus`, contrainte d'échelle : corpus 20-100× plus lourd au minimum, base source PC de 4 Go constatée) : le **layout des fichiers** passe en v2 pour tenir cette échelle. Les événements vivent dans un shard par session : `events/<p>/<sessionId>.jsonl` (`<p>` = deux premiers caractères de l'id de session), une ligne par événement, ordonnés par (`ts`, `id`), stables entre deux ingestions identiques. Les métadonnées de sessions vivent dans `sessions.jsonl` (une ligne par session, ordonnées par `id`, stables). Les sorties brutes vivent dans `raw/<p>/<partId>.txt` (`<p>` = deux premiers caractères de l'id de part). `state.json` SHALL porter un champ `layoutVersion`. Tout outil SHALL refuser explicitement un corpus dont le `layoutVersion` diffère de celui qu'il comprend, en nommant la version lue et la version attendue — jamais de lecture ou d'écriture implicite d'un layout inconnu. Ré-ingestionner ou reconstruire depuis la même source SHALL produire le même ensemble de fichiers, chaque fichier identique octet par octet.
+Décision du 20/09 (change `scale-corpus`, contrainte d'échelle : corpus 20-100× plus lourd au minimum, base source PC de 4 Go constatée) : le **layout des fichiers** passe en v2 pour tenir cette échelle. Les événements vivent dans un shard par session : `events/<p>/<sessionId>.jsonl` (une ligne par événement, ordonnés par (`ts`, `id`), stables entre deux ingestions identiques). Les métadonnées de sessions vivent dans `sessions.jsonl` (une ligne par session, ordonnées par `id`, stables). Les sorties brutes vivent dans `raw/<p>/<partId>.txt`. **`<p>` est le préfixe de répartition** : deux premiers caractères hexadécimaux d'un condensat déterministe de l'identifiant (condensat épinglé à l'implémentation). Retour du 20/09 soir : les identifiants partagent un préfixe constant (`ses_`, `prt_`) — un préfixe tiré des premiers caractères de l'id concentrerait la totalité des fichiers dans un seul répertoire ; le condensat répartit uniformément tout en restant déterministe (une reconstruction identique produit les mêmes chemins). `state.json` SHALL porter un champ `layoutVersion`. Tout outil SHALL refuser explicitement un corpus dont le `layoutVersion` diffère de celui qu'il comprend, en nommant la version lue et la version attendue — jamais de lecture ou d'écriture implicite d'un layout inconnu. Ré-ingestionner ou reconstruire depuis la même source SHALL produire le même ensemble de fichiers, chaque fichier identique octet par octet.
 
 #### Scenario: Message utilisateur simple
 
@@ -28,10 +28,15 @@ Décision du 20/09 (change `scale-corpus`, contrainte d'échelle : corpus 20-100
 - **WHEN** un corpus v2 contient les événements de plusieurs sessions
 - **THEN** chaque session a exactement un shard `events/<p>/<sessionId>.jsonl`, ordonné par (`ts`, `id`), et aucune ligne d'événement n'existe ailleurs.
 
+#### Scenario: Répartition indépendante du préfixe des identifiants
+
+- **WHEN** des milliers de sessions dont les identifiants commencent tous par le même préfixe (`ses_`) — et des preuves dont les identifiants commencent tous par `prt_` — sont écrites
+- **THEN** les fichiers se répartissent entre les répertoires du condensat sans concentration : aucun répertoire ne reçoit une part dominante des fichiers.
+
 #### Scenario: Reconstruction identique
 
 - **WHEN** le corpus est reconstruit intégralement depuis la même source
-- **THEN** l'ensemble des fichiers est identique et chaque fichier (shards d'événements, `sessions.jsonl`) est identique octet par octet à la construction précédente.
+- **THEN** l'ensemble des fichiers est identique et chaque fichier (shards d'événements, `sessions.jsonl`) est identique octet par octet à la construction précédente — mêmes contenus, mêmes chemins.
 
 #### Scenario: Version de layout refusée
 
@@ -56,7 +61,9 @@ Décision du 16/09 (constat d'implémentation) : en v0, l'adaptateur opencode SH
 
 L'ingestion SHALL être incrémentale : un état interne (watermark sur `time_updated` des messages et sessions) détermine ce qui doit être relu. Ingestionner deux fois la même source SHALL produire zéro doublon et zéro divergence dans les sorties. Un rebuild complet depuis zéro SHALL produire le même corpus, et SHALL rester disponible comme option de réparation.
 
-Décision du 20/09 (change `scale-corpus`, contrainte d'échelle) : le coût d'une passe incrémentale SHALL dépendre du **delta lu depuis la source, pas de la taille du corpus** : seuls les shards des sessions nouvelles ou modifiées sont réécrits (coût borné par la taille de session), `sessions.jsonl` reste le seul coût O(#sessions), et la vue dérivable est mise à jour dans la même passe (pas de réindexation séparée). L'ingestion SHALL prendre un verrou consultatif sur le corpus pour empêcher deux ingestions concurrentes ; les lecteurs ne verrouillent pas (échanges atomiques par fichier). Les écritures sont atomiques par fichier et `state.json` est écrit en dernier : une interruption laisse le corpus lisible et cohérent (certains shards avancés, watermark ancien), et la passe suivante converge vers le même résultat qu'une passe unique — jamais un corpus déchiré.
+Décision du 20/09 (change `scale-corpus`, resserrée sur retour du soir) : le coût d'une passe incrémentale SHALL dépendre du **delta lu dans la source, du volume des sessions touchées et de la réécriture des métadonnées de sessions** (O(#sessions)) — et de rien d'autre : jamais du volume du reste du corpus, jamais d'un parcours complet de la source. La lecture incrémentale de la source SHALL utiliser le watermark **en requête** (filtre exécuté par la base sur `time_updated`, appuyé sur ses index), pas un parcours complet des tables filtré après coup. Ajouter un message à une session géante réécrit le shard de cette session : c'est le prix du layout par session, assumé et documenté.
+
+**Protocole de publication** : chaque fichier réécrit est d'abord préparé sous un nom temporaire ; la publication exécute les renames, puis valide la transaction de la vue dérivable — **le COMMIT de la vue est le point de publication** — puis écrit `state.json` en dernier ; les temporaires orphelins sont ramassés à la passe suivante. Conséquences contractuelles : chaque shard est publié atomiquement — jamais de shard déchiré ; entre shards, la publication est **éventuelle** (un crash pendant les renames peut laisser sur disque un mélange de générations de shards), mais **aucune commande de lecture ne consulte les shards directement** : les lectures passent par la vue et rendent toujours le **dernier état publié**, cohérent. Un crash entre le COMMIT et `state.json` laisse la vue en avance sur `state.json` — un état publié valide, que la passe suivante ré-applique idempotemment. Une preuve brute consultée pendant une publication interrompue peut être en avance sur la vue : transitoire documenté, réparé à la passe suivante. Les parcours d'archive (rebuild, empreinte, migration) peuvent observer l'état intermédiaire (temporaires présents, `state.json` en retard) et le signalent. La passe suivante converge toujours vers le même résultat qu'une passe unique. L'ingestion SHALL prendre un verrou consultatif sur le corpus pour empêcher deux ingestions concurrentes ; les lecteurs ne verrouillent pas.
 
 #### Scenario: Double ingestion
 
@@ -66,23 +73,28 @@ Décision du 20/09 (change `scale-corpus`, contrainte d'échelle) : le coût d'u
 #### Scenario: Source évolutive
 
 - **WHEN** de nouveaux messages ont été écrits depuis la dernière ingestion
-- **THEN** seuls les messages et sessions nouveaux ou modifiés sont relus et fusionnés en respectant l'ordre stable ; seuls les shards des sessions touchées sont réécrits, les autres fichiers ne sont ni lus ni réécrits.
+- **THEN** seuls les messages et sessions nouveaux ou modifiés sont relus (watermark en requête indexée, pas de parcours complet des tables) et seuls les shards des sessions touchées sont réécrits — les autres fichiers ne sont ni lus ni réécrits.
 
 #### Scenario: Ingestions concurrentes
 
 - **WHEN** deux ingestions sont lancées simultanément sur le même corpus
 - **THEN** le verrou fait attendre ou échouer proprement la seconde ; aucune écriture entrelacée ne peut produire un fichier de corpus corrompu.
 
-#### Scenario: Interruption puis convergence
+#### Scenario: Interruption avant le point de publication
 
-- **WHEN** une ingestion est interrompue avant l'écriture de `state.json`
-- **THEN** le corpus reste lisible, et l'ingestion suivante converge vers le même résultat qu'une passe unique, sans doublon ni divergence.
+- **WHEN** une ingestion est interrompue avant le COMMIT de la vue (pendant le staging ou les renames)
+- **THEN** toutes les lectures rendent le dernier état publié — cohérent, inchangé pour elles ; les temporaires éventuels sont ignorés puis ramassés à la passe suivante, qui converge.
+
+#### Scenario: Interruption après le point de publication
+
+- **WHEN** une ingestion est interrompue entre le COMMIT de la vue et l'écriture de `state.json`
+- **THEN** les lectures rendent le nouvel état (publié, cohérent) ; la passe suivante relit le delta depuis l'ancien watermark, ré-applique sans doublon et met `state.json` à jour.
 
 ## ADDED Requirements
 
 ### Requirement: Vue dérivable en chemin de lecture
 
-Décision du 20/09 (change `scale-corpus`) : la vue dérivable SQLite — l'index, aujourd'hui dédié à la recherche — devient le **chemin de lecture unique** des données structurées, pour le CLI comme pour toute façade future (MCP). Elle SHALL contenir l'intégralité des enregistrements canoniques (JSON intégral par événement) et les métadonnées de sessions, avec un accès ordonné par (`sessionId`, `ts`, `id`). Les fenêtres de lecture (`--around`, `--ctx`, `--tail`, `--at`) et les voisins de recherche SHALL s'y exécuter comme des requêtes bornées : leur coût et leur empreinte mémoire dépendent de la fenêtre demandée, pas de la taille du corpus ni de la session. La vue SHALL porter le watermark du corpus auquel elle correspond ; toute lecture SHALL vérifier cette fraîcheur et refuser explicitement une vue absente ou périmée (motif + instruction de réparation), au lieu de rendre des données décalées sans le dire. La vue reste **entièrement reconstruisable depuis le seul corpus** (contrat d'index jetable inchangé) ; le corpus JSONL demeure la référence et le rebuild fait foi en cas de divergence.
+Décision du 20/09 (change `scale-corpus`) : la vue dérivable SQLite — l'index, aujourd'hui dédié à la recherche — devient le **chemin de lecture unique** des données structurées, pour le CLI comme pour toute façade future (MCP). Elle SHALL contenir l'intégralité des enregistrements canoniques (JSON intégral par événement) et les métadonnées de sessions, avec un accès ordonné par (`sessionId`, `ts`, `id`). Les fenêtres de lecture (`--around`, `--ctx`, `--tail`, `--at`) et les voisins de recherche SHALL s'y exécuter comme des requêtes bornées : leur coût et leur empreinte mémoire dépendent de la fenêtre demandée, pas de la taille du corpus ni de la session. Les compteurs de lecture (`maskedCount`, `visible`, `total`) restent exacts ; leur calcul est un **dénombrement sur la plage indexée de la session** — son coût dépend de la plage, pas de la fenêtre affichée — et il est couvert par les cibles du banc, pas caché. La vue SHALL porter en son sein le watermark du corpus auquel elle correspond ; toute lecture SHALL vérifier cette fraîcheur et refuser explicitement une vue absente ou périmée (motif + instruction de réparation), au lieu de rendre des données décalées sans le dire. **Limite écrite** (retour du 20/09 soir) : la fraîcheur couvre le **chemin d'ingestion documenté** — une modification hors ingestion (fichier édité sans ingestion, watermark inchangé) n'est pas détectée par la fraîcheur ; l'outil de détection est l'empreinte du corpus, pas le watermark. La vue reste **entièrement reconstruisable depuis le seul corpus** (contrat d'index jetable inchangé) ; le corpus JSONL demeure la référence et le rebuild fait foi en cas de divergence.
 
 #### Scenario: Vue absente
 
@@ -91,7 +103,7 @@ Décision du 20/09 (change `scale-corpus`) : la vue dérivable SQLite — l'inde
 
 #### Scenario: Vue périmée
 
-- **WHEN** la vue ne correspond plus au watermark du corpus (corpus modifié hors ingestion, vue issue d'un autre corpus)
+- **WHEN** la vue ne correspond plus au watermark du corpus (corpus ingéré plus récemment, vue issue d'un autre corpus)
 - **THEN** les lectures refusent avec le motif de fraîcheur et l'instruction de réparation, sans rendre un mélange de générations.
 
 #### Scenario: Fenêtre bornée
@@ -99,14 +111,29 @@ Décision du 20/09 (change `scale-corpus`) : la vue dérivable SQLite — l'inde
 - **WHEN** une session de 100 000 messages est lue avec `--ctx 5` autour d'un message
 - **THEN** seuls les messages de la fenêtre sont lus et rendus ; le coût et la mémoire de l'opération ne dépendent pas de la taille de la session.
 
+#### Scenario: Comptage sur la plage
+
+- **WHEN** `--at` masque une large partie d'une session géante et `maskedCount` est calculé
+- **THEN** le compte est exact et son coût — dénombrement de la plage masquée via l'index — est mesuré au banc et consigné, pas présenté comme borné par la fenêtre.
+
+#### Scenario: Modification hors ingestion non détectée par la fraîcheur
+
+- **WHEN** un shard du corpus est modifié manuellement sans ingestion (watermark inchangé)
+- **THEN** la fraîcheur ne signale rien — la détection de ce type de modification appartient à l'empreinte du corpus, et la documentation le dit.
+
 ### Requirement: Opérations en mémoire bornée
 
-Décision du 20/09 (change `scale-corpus`, contrainte d'échelle) : **aucune commande** du CLI — ingestion, indexation, lecture, preuve brute, recherche (y compris `--raw`), statut, migration — ne charge le corpus, la base source ou une archive v1 dans son intégralité en mémoire. Les parcours complets (rebuild, migration) SHALL s'exécuter en flux, par lots bornés. La lecture de la source pendant l'ingestion SHALL également s'opérer en flux, sans matérialiser l'intégralité de la base. L'empreinte mémoire de chaque opération SHALL être bornée indépendamment de la taille du corpus ; la borne visée est une cible de conception, vérifiée au banc synthétique et consignée.
+Décision du 20/09 (change `scale-corpus`, contrainte d'échelle) : **aucune commande** du CLI — ingestion, indexation, lecture, preuve brute, recherche (y compris `--raw`), statut, migration — ne charge le corpus, la base source ou une archive v1 dans son intégralité en mémoire. Les parcours complets (rebuild, migration) SHALL s'exécuter en flux, par lots bornés. La lecture de la source pendant l'ingestion SHALL s'opérer en flux, sans matérialiser l'intégralité de la base. Les preuves brutes — affichage comme scan — SHALL être lues **par blocs bornés** (avec recouvrement aux frontières pour le scan) : l'empreinte mémoire ne dépend ni du nombre ni de la taille des fichiers `raw/`. L'empreinte mémoire de chaque opération SHALL être bornée indépendamment de la taille du corpus ; la borne visée est une cible de conception, vérifiée au banc synthétique et consignée.
 
 #### Scenario: Lecture d'une session très longue
 
 - **WHEN** `sdig read` rend une fenêtre d'une session très longue
 - **THEN** l'empreinte mémoire de la commande est bornée par la fenêtre demandée, pas par la session ni le corpus.
+
+#### Scenario: Preuve gigantesque
+
+- **WHEN** un fichier de `raw/` fait plusieurs centaines de mégaoctets et est affiché ou scanné
+- **THEN** il est lu par blocs bornés : l'empreinte mémoire ne dépend pas de sa taille.
 
 #### Scenario: Ingestion initiale volumineuse
 
@@ -134,7 +161,7 @@ Le passage d'un corpus v1 (flux `events.jsonl`/`sessions.jsonl` uniques) au layo
 
 ### Requirement: Empreinte déterministe du corpus
 
-Le CLI SHALL exposer une empreinte déterministe du corpus : condensé par fichier (md5), agrégé sur les chemins relatifs **triés** — le résultat SHALL être identique quel que soit l'ordre de parcours du système de fichiers. Cette empreinte est l'outil des conditions d'évaluation (intégrité du corpus avant/après un passage, là où le layout v1 fournissait le md5 d'un fichier unique). Son calcul est O(taille du corpus) : il SHALL être explicite (commande ou option dédiée), jamais exécuté sur le chemin des commandes de lecture.
+Le CLI SHALL exposer une empreinte déterministe du corpus : condensé par fichier (md5), agrégé sur les chemins relatifs **triés** — le résultat SHALL être identique quel que soit l'ordre de parcours du système de fichiers. Cette empreinte est l'outil des conditions d'évaluation (intégrité du corpus avant/après un passage, là où le layout v1 fournissait le md5 d'un fichier unique) **et l'outil de détection des modifications hors ingestion** — ce que la fraîcheur par watermark ne peut pas voir. Son calcul est O(taille du corpus) : il SHALL être explicite (commande ou option dédiée), jamais exécuté sur le chemin des commandes de lecture.
 
 #### Scenario: Empreinte stable
 
@@ -143,5 +170,5 @@ Le CLI SHALL exposer une empreinte déterministe du corpus : condensé par fichi
 
 #### Scenario: Corpus modifié
 
-- **WHEN** un fichier du corpus change (shard, métadonnées, preuve)
+- **WHEN** un fichier du corpus change — par ingestion ou par modification hors ingestion
 - **THEN** l'empreinte change.

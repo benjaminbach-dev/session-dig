@@ -23,7 +23,7 @@ Tout retriever SHALL implémenter une interface unique : `name`, `index(corpus)`
 
 ### Requirement: Performance
 
-L'indexation complète d'un corpus d'environ 5 000 messages SHOULD s'exécuter en quelques secondes ; une requête SHOULD répondre en moins de 100 ms à cette échelle. Décision du 20/09 (change `scale-corpus`, contrainte d'échelle 20-100× et au-delà) : ces bornes sont re-visées à l'échelle et vérifiées sur un **banc synthétique déterministe** (générateur à graine épinglée, ~100× le corpus réel par défaut, 1000× en option, sessions de tailles inégales dont monstres) commis dans le dépôt, ses mesures consignées, hors `npm test`. Cibles de conception : recherche p95 < 100 ms sur 500 000 événements ; première fenêtre de lecture p95 < 100 ms sur une session de 10 000 messages ; delta d'ingestion de 1 000 événements < 10 s sur un corpus d'un million d'événements ; reconstruction complète du banc < 5 minutes ; empreinte mémoire < 512 Mo pour toute opération du banc. Ces bornes restent des cibles de conception, pas des garanties contractuelles ; elles SHALL être vérifiées au banc au moment de l'implémentation et ajustées avec justification si la mesure les contredit.
+L'indexation complète d'un corpus d'environ 5 000 messages SHOULD s'exécuter en quelques secondes ; une requête SHOULD répondre en moins de 100 ms à cette échelle. Décision du 20/09 (change `scale-corpus`, resserrée sur retour du soir) : ces bornes sont re-visées à l'échelle et vérifiées sur un **banc synthétique déterministe** commis dans le dépôt, hors `npm test`. Le banc mesure **le parcours utilisateur complet, pas la seule couche FTS5** : recherche avec rendu groupé par session et voisins (`--ctx`) ; lecture de session avec ancrage `--at` et compteurs exacts ; ingestion initiale et delta depuis une **base source synthétique reprenant la structure réelle d'opencode.db** (mêmes tables, mêmes colonnes) ; lecture de preuve volumineuse. Les conditions de mesure sont consignées : machine, cache chaud/froid (mesures répétées), RSS maximale, espace disque temporaire. Cibles de conception : recherche p95 < 100 ms sur 500 000 événements (parcours complet rendu) ; lecture `--at` avec compteurs p95 < 100 ms sur une session de 10 000 messages ; delta d'ingestion de 1 000 événements < 10 s sur un corpus d'un million d'événements ; reconstruction complète du banc < 5 minutes ; empreinte mémoire < 512 Mo pour toute opération du banc. Ces bornes restent des cibles de conception, pas des garanties contractuelles ; elles SHALL être vérifiées au banc au moment de l'implémentation et ajustées avec justification si la mesure les contredit.
 
 #### Scenario: Volumétrie réelle
 
@@ -32,12 +32,12 @@ L'indexation complète d'un corpus d'environ 5 000 messages SHOULD s'exécuter e
 
 #### Scenario: Banc synthétique à l'échelle
 
-- **WHEN** le banc 100× est exécuté
-- **THEN** les mesures p50/p95 et l'empreinte mémoire sont consignées dans le dépôt, et tout écart aux cibles est documenté et arbitré (cible ajustée avec justification, ou implémentation corrigée).
+- **WHEN** le banc 100× est exécuté (recherche rendue, lecture `--at`, ingestion depuis la base synthétique, preuve volumineuse)
+- **THEN** les mesures p50/p95, la RSS maximale et les conditions (machine, cache, disque) sont consignées dans le dépôt, et tout écart aux cibles est documenté et arbitré (cible ajustée avec justification, ou implémentation corrigée).
 
 ### Requirement: Recherche brute optionnelle
 
-Les sorties d'outils restent exclues de l'index BM25 par défaut (décision du 15/09 : signal contre bruit). Le CLI SHALL offrir une recherche optionnelle par sous-chaîne dans `raw/` (`--raw`), car une erreur précise n'apparaît parfois que dans stderr. Cette recherche SHALL resituer chaque match (session, date, outil, commande) et rester bornée en résultats. Décision du 20/09 (change `scale-corpus`) : le scan s'exécute en **flux** — fichier par fichier, mémoire bornée — et son coût O(volume de `raw/`) est documenté et annoncé : l'option reste opt-in, une opération consciente, jamais une surprise de durée.
+Les sorties d'outils restent exclues de l'index BM25 par défaut (décision du 15/09 : signal contre bruit). Le CLI SHALL offrir une recherche optionnelle par sous-chaîne dans `raw/` (`--raw`), car une erreur précise n'apparaît parfois que dans stderr. Cette recherche SHALL resituer chaque match (session, date, outil, commande) et rester bornée en résultats. Décision du 20/09 (change `scale-corpus`, resserrée sur retour du soir) : le scan s'exécute en **flux** — fichier par fichier, **par blocs bornés à l'intérieur de chaque fichier** (recouvrement aux frontières pour ne pas perdre un match à cheval) — et son coût O(volume de `raw/`) est documenté et annoncé : l'option reste opt-in, une opération consciente, jamais une surprise de durée ; l'empreinte mémoire ne dépend pas de la taille des fichiers.
 
 #### Scenario: Erreur uniquement en stderr
 
@@ -46,5 +46,5 @@ Les sorties d'outils restent exclues de l'index BM25 par défaut (décision du 1
 
 #### Scenario: Scan en flux borné
 
-- **WHEN** `--raw` est exécuté sur un `raw/` de plusieurs gigaoctets
-- **THEN** le scan traite les fichiers en flux sans charger l'archive, rend un résultat borné et affiche sa durée.
+- **WHEN** `--raw` est exécuté sur un `raw/` de plusieurs gigaoctets contenant des fichiers volumineux
+- **THEN** le scan traite les fichiers par blocs sans charger l'archive ni les fichiers entiers, rend un résultat borné et affiche sa durée.
