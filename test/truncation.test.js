@@ -10,7 +10,7 @@ import os from 'node:os'
 import { buildFixtureDb } from './helpers/fixture.js'
 import { ingest } from '../src/corpus.js'
 import { index, search } from '../src/retriever/bm25.js'
-import { sessionSlice, eventsBySession } from '../src/read.js'
+import { sessionSlice, eventsBySession } from '../src/read-legacy.js'
 import { renderRead, renderTerminal, renderJson } from '../src/format.js'
 import { loadCorpus } from '../src/corpus.js'
 

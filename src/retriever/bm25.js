@@ -1,51 +1,27 @@
-// Retriever bm25 : index FTS5 SQLite reconstruit depuis le seul corpus (vue dérivée).
-// Interface contractuelle : { name, index(events), search(query) -> hits {eventId, score} }.
+// Retriever bm25 : FTS5 sur la vue dérivable (change scale-corpus).
+// Interface contractuelle : { name, index(corpus), search(query) -> hits }.
+// `index` opère DEPUIS LE CORPUS EN FLUX (rebuild de la vue) — l'ancienne signature
+// `index(events)` sur tableau matérialisé est retirée : l'interface ne permet plus
+// de forcer le chargement complet du corpus en mémoire. La sémantique de recherche
+// (stopwords, phrases pointées, OR pondéré, snippets, filtres) est strictement
+// conservée — les requêtes dorées ne bougent pas.
 import Database from 'better-sqlite3'
-import fs from 'node:fs'
-import { loadCorpus } from '../corpus.js'
+import { buildView, viewPath, eventCols } from '../view.js'
 import { corpusPaths } from '../paths.js'
 
 export const name = 'bm25'
+export { eventCols }
 
-export function index (root = corpusPaths().root, indexPath) {
-  const { paths, events, sessions } = loadCorpus(root)
-  const dbFile = indexPath || paths.index
-  for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true }) // index jetable : rebuild propre et idempotent
-
-  const db = new Database(dbFile)
-  db.pragma('journal_mode = WAL')
-  db.exec(`
-    CREATE TABLE events(
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      ts INTEGER NOT NULL,
-      role TEXT, agent TEXT, repo TEXT, model TEXT, cmd TEXT, text TEXT
-    );
-    CREATE VIRTUAL TABLE events_fts USING fts5(text, cmd, content='events', content_rowid='rowid');
-  `)
-
-  const ins = db.prepare('INSERT INTO events (id, session_id, ts, role, agent, repo, model, cmd, text) VALUES (?,?,?,?,?,?,?,?,?)')
-  const tx = db.transaction(() => {
-    for (const e of events) {
-      const cmds = (e.toolCalls || []).map(c => c.cmd).filter(Boolean).join('\n')
-      const model = e.model && (e.model.providerID || e.model.modelID)
-        ? `${e.model.providerID || ''}/${e.model.modelID || ''}`
-        : null
-      ins.run(e.id, e.sessionId, e.ts, e.role, e.agent, e.repo, model, cmds || null, e.text ?? '')
-    }
-    // Titres de sessions (décision 17/09, motivée par l'éval) : une ligne synthétique
-    // par session (id = id de session, role 'title') — les titres générés par la
-    // source sont des résumés et constituent un signal de rappel fort.
-    for (const s of sessions) {
-      if (!s.title) continue
-      ins.run(s.id, s.id, s.tsCreated ?? s.tsUpdated ?? 0, 'title', null, s.repo, null, null, s.title)
-    }
-  })
-  tx()
-  db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
-  db.close()
-  return { events: events.length, dbFile }
+/**
+ * index(root, dbFile?) : (re)construit la vue dérivable (index BM25) depuis le
+ * seul corpus, en flux. Idempotent ; jetable et entièrement reconstruisable.
+ * Retourne { events, dbFile } (synchrone : le parcours est en flux, pas en I/O async).
+ */
+export function index (root = corpusPaths().root, dbFile = viewPath(root)) {
+  return buildView(root, { dbFile })
 }
+
+// ── recherche : sémantique inchangée, exécutée sur la vue ──
 
 // Stopwords compacts fr+en (décision 17/09 motivée par l'éval : « comment marche la
 // compaction » perdait contre des sessions bourrées d'occurrences d'« opencode »).
@@ -75,23 +51,25 @@ function ftsQuery (q, joiner = 'AND') {
 }
 
 /**
- * search(indexPath, { q, repo, session, after, before, model, role, agent, limit })
- * → hits ordonnés par rang BM25 (croissant = meilleur).
+ * search(view, { q, repo, session, after, before, model, role, agent, limit })
+ * → hits ordonnés par rang BM25 (croissant = meilleur). `view` est un chemin de
+ * base SQLite (compat CLI/tests) ou une Database déjà ouverte : une commande de
+ * lecture multi-étapes (hits → voisins → compteurs) passe une Database unique et
+ * s'exécute ainsi dans une seule transaction de lecture (un seul snapshot —
+ * aucune génération intercalée par une publication concurrente).
  */
-export function search (indexPath, query) {
-  const { q, repo, session, after, before, model, role, agent, limit = 20 } = query
-  // OR pondéré BM25 (décision 17/09, motivée par l'éval) : l'AND strict laissait
-  // gagner un message « fourre-tout » (config dump contenant tous les termes) contre
-  // la vraie réponse ; la disjonction pondérée par IDF est le standard — un événement
-  // matchant tous les termes cumule les poids et sort naturellement en tête.
-  const match = ftsQuery(q, 'OR')
-  // snippet col0 = text, col1 = cmd. Marqueurs ANSI par défaut (TUI), neutres si plain.
-  // snipPlain = jumeau SANS décorations (bug 20/09 : la détection de coupure ne doit
-  // jamais mesurer le texte décoré — en --plain, »…« gonfle la longueur et masque la coupure).
-  const open = query.plain ? '»' : '\x1b[1;33m'
-  const close = query.plain ? '«' : '\x1b[0m'
-  const db = new Database(indexPath, { readonly: true, fileMustExist: true })
+export function search (view, query) {
+  const own = typeof view === 'string'
+  const db = own ? new Database(view, { readonly: true, fileMustExist: true }) : view
   try {
+    const { q, repo, session, after, before, model, role, agent, limit = 20 } = query
+    const match = ftsQuery(q, 'OR')
+    // snippet col0 = text, col1 = cmd. Marqueurs ANSI par défaut (TUI), neutres si plain.
+    // snipPlain = jumeau SANS décorations (bug 20/09 : la détection de coupure ne doit
+    // jamais mesurer le texte décoré — en --plain, »…« gonfle la longueur et masque la coupure).
+    const open = query.plain ? '»' : '\x1b[1;33m'
+    const close = query.plain ? '«' : '\x1b[0m'
+
     const where = ['events_fts MATCH @match']
     const base = { repo, session, after, before, model, role, agent }
     if (repo) { where.push('e.repo = @repo'); }
@@ -117,6 +95,6 @@ export function search (indexPath, query) {
     for (const k of Object.keys(base)) if (base[k] != null) params[k] = typeof base[k] === 'string' ? (k === 'session' ? `${base[k]}%` : (k === 'model' ? `%${base[k]}%` : base[k])) : base[k]
     return db.prepare(sql).all(params)
   } finally {
-    db.close()
+    if (own) db.close()
   }
 }

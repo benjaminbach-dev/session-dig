@@ -6,12 +6,13 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { buildFixtureDb } from './helpers/fixture.js'
-import { ingest } from '../src/corpus.js'
+import { ingest, loadCorpus } from '../src/corpus.js'
 import { index, search } from '../src/retriever/bm25.js'
-import { mergeWindows, sessionSlice, eventsBySession, resolveAnchor } from '../src/read.js'
+import { mergeWindows, sessionSlice, resolveAnchor, parseAnchorTimestamp, eventsBySessionDb } from '../src/read.js'
+import { eventsBySession } from '../src/read-legacy.js'
+import { openView } from '../src/view.js'
 import { rawScan } from '../src/raw.js'
 import { renderRead, renderTerminal } from '../src/format.js'
-import { loadCorpus } from '../src/corpus.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-read-'))
 const dbPath = path.join(tmp, 'fixture.db')
@@ -224,7 +225,7 @@ test('--at : la preuve reste entière (raw non filtré par le masquage)', () => 
   const all = events.filter(e => e.sessionId === 'ses_at1')
   assert.equal(all.length, 5) // la session complète est toujours là
   const slice = sessionSlice(root, 'ses_at1', { at: 'msg_at1mut' })
-  assert.equal(slice.events.length, 5) // la vue est bornée, la source n'est pas coupée
+  assert.equal(slice.total, 5) // la vue est bornée, la source n'est pas coupée
 })
 
 test('CLI : read --at (JSON, sortie non nulle sur ancre invalide, --at réservé à read)', () => {  const bin = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'sdig.js')

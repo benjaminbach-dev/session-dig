@@ -1,48 +1,78 @@
 // Recherche brute optionnelle dans raw/ (retour d'agent 16/09) : une erreur précise
 // n'apparaît parfois que dans stderr — les sorties restent hors index BM25 par défaut,
-// mais un scan sous-chaîne sur raw/*.txt doit rester possible à la demande.
+// mais un scan sous-chaîne sur raw/ doit rester possible à la demande.
+//
+// Change scale-corpus : scan en flux — fichier par fichier, PAR BLOCS BORNÉS à
+// l'intérieur de chaque fichier (recouvrement aux frontières : un match à cheval sur
+// deux blocs n'est pas perdu) — l'empreinte mémoire ne dépend ni du nombre ni de la
+// taille des fichiers raw. Les références (rawRef → événement) viennent de la vue
+// (table rawrefs) — jamais d'un chargement du corpus.
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadCorpus } from './corpus.js'
+import { openView } from './view.js'
+import { rawShardPath } from './layout.js'
+import { streamBlocks } from './util.js'
 import { corpusPaths } from './paths.js'
+
+const BLOCK = 1 << 20 // 1 Mo
+const OVERLAP = 4096 // recouvrement : les matches à cheval survivent aux frontières
 
 /**
  * Scan sous-chaîne (insensible à la casse) des sorties brutes référencées par le corpus.
- * Retourne [{ rawRef, sessionId, ts, role, tool, cmd, line }] borné par limit.
+ * Retourne [{ rawRef, sessionId, ts, role, tool, cmd, line, lineNo }] borné par limit.
+ * Durée affichée par le CLI : son coût O(volume de raw/) est une opération consciente.
  */
 export function rawScan (root, needle, { limit = 10 } = {}) {
   if (!needle || !needle.trim()) return []
-  const { paths, events } = loadCorpus(root)
-  const byRef = new Map() // rawRef → event (pour resituer le hit)
-  for (const e of events) {
-    for (const c of e.toolCalls || []) {
-      if (c.rawRef && !byRef.has(c.rawRef)) byRef.set(c.rawRef, e)
-    }
-  }
+  const paths = corpusPaths(root)
   const low = needle.toLowerCase()
   const out = []
-  let files
-  try { files = fs.readdirSync(paths.raw) } catch { return [] }
-  for (const f of files) {
-    if (!f.endsWith('.txt')) continue
-    const ref = f.slice(0, -4)
-    const ev = byRef.get(ref)
-    if (!ev) continue // sortie orpheline (part sans message dans le corpus) : ignorée
-    let content
-    try { content = fs.readFileSync(path.join(paths.raw, f), 'utf8') } catch { continue }
-    const lines = content.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].toLowerCase().includes(low)) {
-        const call = (ev.toolCalls || []).find(c => c.rawRef === ref)
-        out.push({
-          rawRef: ref, sessionId: ev.sessionId, ts: ev.ts, role: ev.role,
-          tool: call?.tool ?? null, cmd: call?.cmd ?? null,
-          line: lines[i].trim().slice(0, 200), lineNo: i + 1
-        })
-        break // première ligne suffît à resituer
-      }
-    }
+
+  // références depuis la vue (borné : requête indexée par rawRef)
+  let refs
+  try {
+    const db = openView(root)
+    refs = db.prepare('SELECT rawRef, eventId, sessionId, ts, role, tool, cmd FROM rawrefs LIMIT 1000000').all()
+    db.close()
+  } catch {
+    refs = [] // vue absente : aucune preuve resituable — scan rendra vide sans crash
+  }
+  if (!refs.length) return []
+
+  // sessions touchées seulement : shard de l'événement porteur (1 fichier par ref)
+  for (const ref of refs) {
     if (out.length >= limit) break
+    const file = rawShardPath(paths.raw, ref.rawRef)
+    if (!fs.existsSync(file)) continue // sortie orpheline : ignorée
+    let found = null
+    let carryLineNo = 0
+    streamBlocks(file, { blockSize: BLOCK, overlap: OVERLAP, onBlock: (block) => {
+      const lines = block.split('\n')
+      let lineNo = carryLineNo
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i]
+        if (i < lines.length - 1) lineNo++
+        if (l.toLowerCase().includes(low)) {
+          found = { line: l.trim().slice(0, 200), lineNo }
+          return false // arrêt du parcours de ce fichier
+        }
+      }
+      // ligne incomplète en fin de bloc (hors recouvrement) : on compte ce qui est complet
+      carryLineNo += lines.length - 1 - (block.endsWith('\n') ? 1 : 0)
+      return true
+    } })
+    if (found) {
+      out.push({
+        rawRef: ref.rawRef,
+        sessionId: ref.sessionId,
+        ts: ref.ts,
+        role: ref.role,
+        tool: ref.tool,
+        cmd: ref.cmd,
+        line: found.line,
+        lineNo: found.lineNo
+      })
+    }
   }
   return out
 }

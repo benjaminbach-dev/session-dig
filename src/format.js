@@ -31,7 +31,6 @@ const stripAnsi = s => (s || '').replace(ANSI_RE, '')
  * gonflent la longueur — un extrait coupé pouvait dépasser la longueur du message
  * complet et passer inaperçu. snipPlain (jumeau sans décorations, calculé par le
  * retriever) fait foi et conserve les caractères de la source, dont « ».
- * Sans ce jumeau, le nettoyage des décorations (ANSI + »«) reste un repli approximatif.
  */
 function contentLen (displayed, plainTwin) {
   if (plainTwin != null) return plainTwin.length
@@ -100,7 +99,11 @@ export function renderEvent (e, { mark = '  ', hit = null, plain = false, full =
 }
 
 export function renderTerminal (hits, sessionsById, opts = {}) {
-  const { ctx = 0, eventsBySession = null, plain = false, full = false, chars = null } = opts
+  // Deux sources de contexte (change scale-corpus) :
+  //  - ctxBySession : Map sessionId → { total, evs, spans, indexIds } issu des
+  //    requêtes bornées de la vue (chemin de commande, CLI) ;
+  //  - eventsBySession : Map sessionId → events complets (tests à échelle minuscule).
+  const { ctx = 0, ctxBySession = null, eventsBySession = null, plain = false, full = false, chars = null } = opts
   const dim = plain ? '' : '\x1b[2m'
   const groups = groupBySession(hits)
   const lines = []
@@ -113,20 +116,27 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
       : `── session ${g.sessionId}`
     lines.push(`\x1b[1m${head}\x1b[0m  \x1b[2m${g.sessionId}\x1b[0m`)
 
-    const evs = ctx > 0 && eventsBySession ? eventsBySession.get(g.sessionId) : null
+    const win = ctx > 0 && ctxBySession ? ctxBySession.get(g.sessionId) : null
+    const evs = win ? win.evs : (ctx > 0 && eventsBySession ? eventsBySession.get(g.sessionId) : null)
     if (evs) {
       // Contexte : voisins ±ctx autour de chaque hit, fenêtres fusionnées, chronologique.
-      const hitIdxs = []
-      const idxById = new Map(evs.map((e, i) => [e.id, i]))
-      for (const h of g.hits) { const i = idxById.get(h.id); if (i != null) hitIdxs.push(i) }
-      for (const [a, b] of mergeWindows(evs.length, hitIdxs, ctx)) {
+      let hitIdxs
+      if (win) {
+        hitIdxs = (win.indexIds || []).map((id, i) => (id != null && hitById.has(id) ? i : null)).filter(i => i != null)
+      } else {
+        hitIdxs = []
+        const idxById = new Map(evs.map((e, i) => [e.id, i]))
+        for (const h of g.hits) { const i = idxById.get(h.id); if (i != null) hitIdxs.push(i) }
+      }
+      for (const [a, b] of mergeWindows(win ? (win.total ?? evs.length) : evs.length, hitIdxs, ctx)) {
         if (a > 0) lines.push('    ⋯')
         for (let i = a; i <= b; i++) {
           const e = evs[i]
+          if (!e) continue
           const hit = hitById.get(e.id)
           lines.push(renderEvent(e, { mark: hit ? '► ' : '  ', hit, plain, full, chars }))
         }
-        if (b < evs.length - 1) lines.push('    ⋯')
+        if (b < (win ? (win.total ?? evs.length) : evs.length) - 1) lines.push('    ⋯')
       }
     } else {
       for (const h of g.hits) {
@@ -173,13 +183,14 @@ export function renderRead (slice, sessionId, opts = {}) {
   const reset = plain ? '' : '\x1b[0m'
   const L = []
   const title = ses ? `${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}` : sessionId
-  L.push(`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${evs.length} messages${anchor ? ` (${last + 1} visibles)` : ''}\x1b[0m`)
+  L.push(`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${slice.total ?? evs.length} messages${anchor ? ` (${last + 1} visibles)` : ''}\x1b[0m`)
   if (anchor) L.push(`${dim}ancre : ${anchor.id ? `${anchor.id} ` : ''}(${anchor.date}) — lecture bornée à cet instant, ancre incluse${reset}`)
   if (error) L.push(`${dim}${error}${reset}`)
   for (const [a, b] of spans) {
     if (a > 0) L.push('  ⋯')
     for (let i = a; i <= b; i++) {
-      const e = evs[i]
+      const e = evs[i - a] ?? evs[i] // fenêtres partielles : les events suivent les spans
+      if (!e) continue
       const mark = slice.aroundIdx === i ? '► ' : '  '
       L.push(`${String(i).padStart(3)} ${renderEvent(e, { mark, full, chars, plain })}`)
     }
@@ -197,6 +208,7 @@ export function renderReadJson (slice, sessionId) {
   const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
   const idxs = []
   for (const [a, b] of spans) for (let i = a; i <= b; i++) idxs.push(i)
+  const evById = new Map(evs.map(e => [e.id, e]))
   return JSON.stringify({
     sessionId,
     title: ses?.title ?? null,
@@ -204,10 +216,11 @@ export function renderReadJson (slice, sessionId) {
     anchor,
     maskedCount,
     visible: Math.max(0, last + 1),
-    total: evs.length,
+    total: slice.total ?? evs.length,
     error: error ?? undefined,
     messages: idxs.map(i => {
-      const e = evs[i]
+      const e = evById.get(idOfIndex(slice, i)) || evs[idxs.indexOf(i)]
+      if (!e) return null
       return {
         index: i,
         id: e.id,
@@ -219,8 +232,13 @@ export function renderReadJson (slice, sessionId) {
         text: e.text ?? null,
         toolCalls: e.toolCalls ?? []
       }
-    })
+    }).filter(Boolean)
   }, null, 2)
+}
+
+// index positionnel → id (spans partiels : la fenêtre n'est pas chargée en entier)
+function idOfIndex (slice, i) {
+  return slice.indexIds?.[i] ?? null
 }
 
 /** Section sortie brute (sdig --raw). */
@@ -257,11 +275,21 @@ export function renderJson (hits) {
 export function renderStatus (st, paths) {
   const L = []
   L.push(`corpus   : ${paths.root}`)
+  L.push(`layout   : v${st.layout ?? 2}`)
   L.push(`sessions : ${st.counts.sessions}`)
   L.push(`events   : ${st.counts.events}`)
   L.push(`raw      : ${st.rawFiles} fichier(s)`)
   L.push(`watermark: message=${st.watermark.message} session=${st.watermark.session} (${fmtTs(st.watermark.message)})`)
-  L.push(`index    : ${st.index ? `${st.index.events} event(s) indexé(s), MAJ ${fmtTs(st.index.mtime)}` : 'absent (lancer sdig index)'}`)
+  L.push(`vue      : ${st.view ? `${st.view.events} event(s) en vue, MAJ ${fmtTs(st.view.mtime)}` : 'absente (lancer sdig refresh)'}`)
+  return L.join('\n')
+}
+
+/** Empreinte du corpus (sdig fingerprint) : valeur, taille, md5 par fichier. */
+export function renderFingerprint (f) {
+  const fmtBytes = n => n > 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} Mo` : n > 1024 ? `${(n / 1024).toFixed(1)} Ko` : `${n} o`
+  const L = []
+  L.push(`empreinte : ${f.fingerprint}  (${f.files.length} fichier(s), ${fmtBytes(f.bytes)})`)
+  for (const fl of f.files) L.push(`  ${fl.md5}  ${fl.file}`)
   return L.join('\n')
 }
 
