@@ -112,11 +112,16 @@ Ce que l'audit regarde — **la commande réellement invoquée, jamais la simple
   redirection/argument pointant un fichier de l'archive sont des déviations. D'où :
   `sdig search "ingest"` = recherche légitime, `sdig ingest` = écriture, `grep sdig events.jsonl` =
   lecture directe, `sdig read ses_x < events.jsonl` = lecture par redirection ;
+- **les guillemets ne protègent pas** : le shell les retire, donc `sdig "ingest"` est traité comme
+  `sdig ingest`. Seul un motif *variable* (`sdig "$q"`) reste indécidable ;
+- **une redirection ouvre réellement le fichier** : la citer en argument de requête
+  (`sdig search "questions.jsonl"`) n'est pas une lecture, la rediriger
+  (`sdig search proxy < eval/natural/questions.jsonl`) en est une — et devient donc invalidante ;
 - les invocations sdig légitimes (`search`, `read`, `raw`, `status`, `index`) sont exemptées, sauf
   leurs redirections et les chemins passés en argument positionnel ;
 - les **formes indécidables** (commande dynamique, `$(…)`, `xargs`, `eval`, option pointant un
-  chemin explicite) sont listées **« à examiner »** : ni déclarées propres, ni accusées — à trancher
-  à la main dans le rapport ;
+  chemin explicite, sous-commande variable) sont listées **« à examiner »** : ni déclarées propres,
+  ni accusées — à trancher à la main dans le rapport ;
 - la lecture des fichiers du jeu de test est listée comme **invalidante** (exécution exclue de
   l'agrégat, pas notée).
 

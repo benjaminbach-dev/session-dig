@@ -15,8 +15,12 @@
 //     ou une redirection/argument pointant un fichier de l'archive est une
 //     déviation — `sdig search "ingest"` reste une recherche légitime, tandis que
 //     `grep sdig events.jsonl` (commandes `grep`) est une lecture directe.
-//     Les formes indécidables (commande dynamique, substitution, xargs) sont
-//     marquées « à examiner » plutôt que déclarées propres ou coupables.
+//     Le shell retire les guillemets : `sdig "ingest"` EST `sdig ingest`, seul un
+//     motif *variable* (`sdig "$q"`) reste indécidable. Une redirection est traitée
+//     comme une ouverture réelle du fichier (contrairement à un nom cité en
+//     argument de requête).
+//     Les formes indécidables (commande dynamique, substitution, xargs, sous-commande
+//     variable) sont marquées « à examiner » plutôt que déclarées propres ou coupables.
 //  2. Une entrée qu'on ne sait pas lire n'est pas une entrée propre : les JSON
 //     illisibles et les appels sans commande extractible sont comptés, listés et
 //     font basculer le rapport en « audit incomplet » (sortie non nulle en --strict).
@@ -68,6 +72,9 @@ const MUTATING_SUBCOMMANDS = new Set(['ingest', 'refresh'])
 
 // Commandes qui en préfixent une autre : on continue la recherche après elles.
 const PREFIX_COMMANDS = new Set(['sudo', 'env', 'time', 'command', 'exec', 'nohup', 'nice', 'stdbuf'])
+// Mots-clés qui précèdent une commande dans un bloc (« do sdig … », « then … ») : on
+// les saute pour continuer à reconnaître la commande réellement invoquée.
+const LEADING_KEYWORDS = new Set(['do', 'then', 'else'])
 // Mots-clés de contrôle shell : pas de commande invoquée (entête de boucle, bloc…).
 const SHELL_KEYWORDS = new Set(['for', 'do', 'done', 'then', 'else', 'elif', 'fi', 'if', 'while', 'until', 'case', 'esac', 'in', '{', '}', '(', ')', '!', '&&', '||'])
 // Commandes dont l'action réelle est indécidable sans interpréter le shell.
@@ -230,7 +237,7 @@ export function parseSegment (seg) {
   const reds = redirections(seg)
   let i = 0
   while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i].text) && !toks[i].quoted) i++ // VAR=valeur
-  while (i < toks.length && PREFIX_COMMANDS.has(basename(toks[i].text))) i++
+  while (i < toks.length && (PREFIX_COMMANDS.has(basename(toks[i].text)) || (LEADING_KEYWORDS.has(toks[i].text) && !toks[i].quoted))) i++
   const head = toks[i]
   if (!head || head.quoted || SHELL_KEYWORDS.has(head.text)) {
     return { kind: 'keyword', bin: null, subcommand: null, flagValues: [], positionalPaths: [], redirections: reds, raw: seg }
@@ -307,18 +314,30 @@ export function analyseCommand (command) {
     if (p.kind === 'dynamic') {
       review.push({ reason: p.bin === 'xargs' || p.bin === 'eval' ? `commande dynamique (${p.bin})` : 'commande indécidable (substitution/variable)', excerpt: window(masked, 0, Math.min(masked.length, 60)) })
     }
-    const sdigLegit = p.kind === 'command' && p.bin === 'sdig' && !(p.subcommand && !p.quotedSub && MUTATING_SUBCOMMANDS.has(p.subcommand))
-    if (p.kind === 'command' && p.bin === 'sdig' && p.subcommand && !p.quotedSub && MUTATING_SUBCOMMANDS.has(p.subcommand)) {
+    const isSdig = p.kind === 'command' && p.bin === 'sdig'
+    // Le shell retire les guillemets : `sdig "ingest"` EST `sdig ingest`. La seule
+    // différence qui compte est une sous-commande *variable* (`sdig "$q"`), dont la
+    // valeur réelle est invisible ici → « à examiner ».
+    const subIsVariable = isSdig && p.subcommand !== null && /[$`]/.test(p.subcommand)
+    const subIsMutation = isSdig && p.subcommand !== null && !subIsVariable && MUTATING_SUBCOMMANDS.has(p.subcommand)
+    const sdigLegit = isSdig && !subIsMutation && !subIsVariable
+    if (subIsMutation) {
       push(hits, { motif: 'sdig-mutation', label: 'sdig ingest/refresh (écriture du corpus)', invalidating: false, excerpt: window(masked, 0, Math.min(masked.length, 80)) })
     }
-    // Cibles à tester : le segment entier pour une commande ordinaire, sinon les
-    // seules redirections et chemins passés en argument à sdig.
-    const targets = sdigLegit ? [...p.redirections.map(r => r.target), ...p.positionalPaths] : [masked]
+    if (subIsVariable) {
+      review.push({ reason: 'sous-commande sdig variable (valeur invisible)', excerpt: window(masked, 0, Math.min(masked.length, 80)) })
+    }
+    // Cibles : le segment entier pour une commande ordinaire ; pour un sdig légitime,
+    // ses redirections (qui OUVRENT réellement le fichier) et les chemins passés en
+    // argument (un nom du jeu cité en argument n'est pas une lecture, une redirection si).
+    const targets = sdigLegit
+      ? [...p.redirections.map(r => ({ text: r.target, opened: true })), ...p.positionalPaths.map(t => ({ text: t, opened: false }))]
+      : [{ text: masked, opened: true }]
     for (const t of targets) {
       for (const m of MOTIFS) {
         if (m.from === 'invocation') continue
-        if (sdigLegit && m.invalidating) continue // le jeu de test cité en argument de sdig n'est pas une lecture
-        push(hits, hitIn(maskQuotedPhrases(t), m))
+        if (sdigLegit && m.invalidating && !t.opened) continue
+        push(hits, hitIn(maskQuotedPhrases(t.text), m))
       }
     }
     if (sdigLegit && p.flagValues.some(v => /[/\\]/.test(v))) {

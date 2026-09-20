@@ -38,10 +38,20 @@ test('`grep sdig events.jsonl` : accès direct signalé (le mot sdig ne suffit p
 
 test('`sdig search "ingest"` : recherche légitime, pas une écriture', () => {
   assert.deepEqual(deviationsOf(['sdig search "ingest"']), [])
-  assert.deepEqual(deviationsOf(['sdig "ingest"']), [])
   assert.deepEqual(deviationsOf(['sdig --json read ses_x --tail 20']), [])
   assert.deepEqual(deviationsOf(['sdig index']), [])
   assert.deepEqual(deviationsOf(['sdig refresh-free-zone']), [])
+  assert.deepEqual(deviationsOf(['sdig "meilleur des mondes" --limit 5']), [])
+})
+
+test('guillemets retirés par le shell : `sdig "ingest"` EST `sdig ingest`', () => {
+  assert.ok(motifsOf(['sdig "ingest"']).includes('sdig-mutation'))
+  assert.ok(motifsOf(["sdig 'refresh'"]).includes('sdig-mutation'))
+  assert.ok(motifsOf(['sdig \"ingest\" --corpus /tmp/x']).includes('sdig-mutation'))
+  // Sous-commande variable : valeur invisible → « à examiner », ni propre ni coupable.
+  const r = analyseCommand('for q in "ingest" "search"; do sdig "$q" --json; done')
+  assert.equal(r.hits.length, 0)
+  assert.ok(r.review.some(n => /sous-commande sdig variable/.test(n.reason)))
 })
 
 test('`sdig read ses_x < events.jsonl` : redirection = lecture directe signalée', () => {
@@ -52,6 +62,15 @@ test('`sdig read ses_x < events.jsonl` : redirection = lecture directe signalée
   // Une redirection vers /dev/null ou une duplication de fd n'est pas une déviation.
   assert.deepEqual(deviationsOf(['sdig status 2>&1 | head -5']), [])
   assert.deepEqual(deviationsOf(['sdig read ses_x > /tmp/out.txt']), [])
+})
+
+test('redirection vers un fichier du jeu de test : ouverture réelle, donc invalidante', () => {
+  const r = auditResponses([response('n14', ['sdig search proxy < eval/natural/questions.jsonl'])])
+  assert.equal(r.deviations.length, 1)
+  assert.ok(r.deviations[0].motifs.includes('playbook'))
+  assert.equal(r.invalidating, 1)
+  // Alors qu'un nom du jeu cité comme requête (sans redirection) reste innocent.
+  assert.deepEqual(deviationsOf(['sdig search "questions.jsonl"']), [])
 })
 
 test('chemin passé en argument positionnel à sdig : signalé', () => {
