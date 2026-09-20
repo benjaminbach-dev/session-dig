@@ -11,8 +11,9 @@ const USAGE = `sdig — archéologie de sessions opencode
 
 Usage:
   sdig <requête> [filtres]     recherche (commande par défaut)
-  sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--full | --chars N]
-                                dérouler une session autour d'un message
+  sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--at <ancre>] [--full | --chars N] [--json]
+                                dérouler une session autour d'un message, éventuellement
+                                bornée dans le temps (--at : id de message, date, ou epoch ms)
   sdig raw <partId>            afficher une sortie d'outil brute (preuve)
   sdig ingest [--db P] [--rebuild]   source → corpus (incrémental par défaut)
   sdig index                          corpus → index BM25 (rebuild complet)
@@ -29,6 +30,11 @@ Filtres de recherche :
   --agent A      agent exact (build, plan...)
   --limit N      défaut 20
   --ctx N        affiche N messages voisins autour de chaque hit (lecture du contexte)
+  --at ANCRE     (read) borne la lecture à un instant : masque les messages postérieurs
+                 à l'ancre (id de message de la session, AAAA-MM-JJ[THH:MM], ou epoch ms ;
+                 une date seule garde la journée entière visible). L'ancre est rappelée et
+                 le nombre de messages masqués est affiché — jamais de masquage silencieux.
+                 Hors périmètre : aucune détection des changements d'état.
   --raw          cherche aussi dans les sorties brutes (stderr inclus)
   --full         texte intégral des messages (lève la limite d'affichage ; read, --ctx, hits)
   --chars N      limite d'affichage par message en caractères (défaut : 400 + 4 lignes)
@@ -47,7 +53,7 @@ function fail (msg, code = 1) {
 function parseArgs (argv) {
   const positional = []
   const flags = {}
-  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'head', 'full', 'chars'])
+  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'at', 'head', 'full', 'chars'])
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--help' || a === '-h') { flags.help = true; continue }
@@ -77,6 +83,12 @@ async function main () {
   const sub = argv[0]
   const isSub = ['ingest', 'index', 'refresh', 'status', 'read', 'raw'].includes(sub)
   const { positional, flags } = parseArgs(isSub ? argv.slice(1) : argv)
+
+  // --at (change add-read-at) n'existe que sur la lecture : la recherche borne par date
+  // avec --after/--before, elle ne masque pas d'affichage.
+  if (flags.at && !(isSub && sub === 'read')) {
+    fail('--at : option de `sdig read` uniquement (pour la recherche, voir --after/--before)')
+  }
 
   if (flags.home) process.env.SESSION_DIG_HOME = flags.home
   if (flags.db) process.env.SESSION_DIG_DB = flags.db
@@ -120,16 +132,20 @@ async function main () {
 
   if (isSub && sub === 'read') {
     const sessionId = positional[0]
-    if (!sessionId) fail('usage : sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--full | --chars N]')
+    if (!sessionId) fail('usage : sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--at <ancre>] [--full | --chars N] [--json]')
     const chars = parseChars(flags)
     const { sessionSlice } = await import('../src/read.js')
-    const { renderRead } = await import('../src/format.js')
+    const { renderRead, renderReadJson } = await import('../src/format.js')
     const slice = sessionSlice(paths.root, sessionId, {
       aroundId: flags.around,
       ctx: flags.ctx ? parseInt(flags.ctx, 10) : 10,
-      tail: flags.tail ? parseInt(flags.tail, 10) : undefined
+      tail: flags.tail ? parseInt(flags.tail, 10) : undefined,
+      at: flags.at
     })
     if (!slice) fail(`session inconnue : ${sessionId} (préfixe accepté dans sdig --session, pas ici — id complet requis)`)
+    // Ancre invalide : erreur explicite, sortie non nulle, aucune sortie partielle trompeuse.
+    if (slice.fatal) fail(slice.error, 2)
+    if (flags.json) { console.log(renderReadJson(slice, sessionId)); return }
     console.log(renderRead(slice, sessionId, { full: !!flags.full, chars, plain: !!flags.plain }))
     return
   }

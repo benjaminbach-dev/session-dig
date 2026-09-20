@@ -158,14 +158,24 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
 
 function reset0 (plain) { return plain ? '' : '\x1b[0m' }
 
-/** Lecture d'une session (sdig read) : fenêtres avec index positionnels. */
+/**
+ * Lecture d'une session (sdig read) : fenêtres avec index positionnels.
+ * Change add-read-at : deux marqueurs distincts, jamais confondus —
+ *   - « ancre : … » en tête quand la lecture est bornée dans le temps ;
+ *   - « … N message(s) … masqué(s) » en fin de vue (masquage temporel) ;
+ *   - le marqueur de troncature reste par message (coupure d'affichage).
+ */
 export function renderRead (slice, sessionId, opts = {}) {
   const { full = false, chars = null, plain = false } = opts
-  const { ses, events: evs, spans, error } = slice
+  const { ses, events: evs, spans, error, anchor = null, maskedCount = 0 } = slice
+  const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
+  const dim = plain ? '' : '\x1b[2m'
+  const reset = plain ? '' : '\x1b[0m'
   const L = []
   const title = ses ? `${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}` : sessionId
-  L.push(`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${evs.length} messages\x1b[0m`)
-  if (error) L.push(`\x1b[2m${error}\x1b[0m`)
+  L.push(`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${evs.length} messages${anchor ? ` (${last + 1} visibles)` : ''}\x1b[0m`)
+  if (anchor) L.push(`${dim}ancre : ${anchor.id ? `${anchor.id} ` : ''}(${anchor.date}) — lecture bornée à cet instant, ancre incluse${reset}`)
+  if (error) L.push(`${dim}${error}${reset}`)
   for (const [a, b] of spans) {
     if (a > 0) L.push('  ⋯')
     for (let i = a; i <= b; i++) {
@@ -173,9 +183,44 @@ export function renderRead (slice, sessionId, opts = {}) {
       const mark = slice.aroundIdx === i ? '► ' : '  '
       L.push(`${String(i).padStart(3)} ${renderEvent(e, { mark, full, chars, plain })}`)
     }
-    if (b < evs.length - 1) L.push('  ⋯')
+    if (b < last) L.push('  ⋯')
+  }
+  if (maskedCount > 0) {
+    L.push(`${dim}… ${maskedCount} message(s) postérieur(s) à l'ancre masqué(s) — relire sans --at pour voir la session entière${reset}`)
   }
   return L.join('\n')
+}
+
+/** Lecture bornée en JSON (change add-read-at) : ancre résolue + compte masqué + textes intégraux. */
+export function renderReadJson (slice, sessionId) {
+  const { ses, events: evs, spans, anchor = null, maskedCount = 0, error = null } = slice
+  const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
+  const idxs = []
+  for (const [a, b] of spans) for (let i = a; i <= b; i++) idxs.push(i)
+  return JSON.stringify({
+    sessionId,
+    title: ses?.title ?? null,
+    repo: ses?.repo ?? null,
+    anchor,
+    maskedCount,
+    visible: Math.max(0, last + 1),
+    total: evs.length,
+    error: error ?? undefined,
+    messages: idxs.map(i => {
+      const e = evs[i]
+      return {
+        index: i,
+        id: e.id,
+        ts: e.ts,
+        date: fmtTs(e.ts),
+        role: e.role,
+        agent: e.agent ?? null,
+        model: e.model ?? null,
+        text: e.text ?? null,
+        toolCalls: e.toolCalls ?? []
+      }
+    })
+  }, null, 2)
 }
 
 /** Section sortie brute (sdig --raw). */

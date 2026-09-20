@@ -52,6 +52,21 @@
 - 4 vérités terrain clarifiées (sessions légitimes trouvées ajoutées à `expect`, notes explicatives) : sous-agent recherche Chutes.ai, session police Lilex/Termux, session test ctx_search, sous-agent specs plugin ai agent.
 - ⚠ **Réserve honnête** : ces questions sont auto-dérivées (vocabulaire souvent proche des titres) — biais favorable. Les questions **utilisateur** (« je cherchais cette décision-là ») restent la vraie mesure : les ajouter dans `eval/queries.json` remplacera progressivement les auto, et leurs échecs éventuels documenteront le cas embeddings (v2) bien mieux que les miens.
 
+## Phase v0.3 — jamais de coupure silencieuse — **IMPLÉMENTÉE le 20/09** (change `add-remedy-truncation`)
+
+- ✅ Marqueur de troncation auto-suffisant (compteurs exacts + chemin `--full` / `--chars N` / `search --json`) sur `read` (messages, `--around`, `--ctx`, `--tail`) et sur les hits groupés ; `--full` lève la limite, `--chars N` la fixe, `--json` rend le texte intégral. Deux correctifs de mesure trouvés à l'usage (décorations comptées à tort, guillemets source).
+- ✅ Régression : `npm run eval` porte désormais 28 questions (26 dorées + 2 « brûlées » reformulées depuis le jeu naturel, jamais verbatim).
+
+## Phase v0.4 — évaluation traçable et ancrage temporel — **IMPLÉMENTÉE le 20/09**
+
+Deux changes issus de l'analyse du premier passage réel (19/09) et de son rescopage du 20/09 :
+
+1. ✅ **`update-natural-eval`** — audit déterministe des accès (`scripts/audit-toolcalls.mjs` : motifs épinglés + empreinte, reconnaissance de la **commande invoquée**, section « à examiner », statut « audit incomplet ») ; grille de notation committable (unité = fait attendu, buckets stricts, fausses méta-affirmations, dérives temporelles) ; inter-notation indépendante. Effet mesuré : le « 0 déviation » du rapport du 19/09 était faux — 9 commandes en déviation sur `run-A`, 9 sur le pilote, 0 (audit incomplet) sur le témoin.
+2. ✅ **`add-read-at`** — `sdig read <session> --at <ancre>` (id de message, `AAAA-MM-JJ[THH:MM]`, epoch ms) masque les messages postérieurs : ancre résolue **affichée**, marqueur explicite du compte masqué, inclusion de l'instant exact, **masquage d'abord puis fenêtrage** `--around`/`--ctx`/`--tail`, erreurs explicites (ancre inconnue, ancre d'une autre session, fenêtre entièrement postérieure), `--json` avec `anchor` + `maskedCount`. Tests 75/75.
+   - **Décision** : le masquage est un **filtre de lecture**, pas un contrôle d'accès (`sdig raw` reste intégral, `--json` non tronqué) ; `--at` n'existe que sur `read` (la recherche garde `--after`/`--before`) ; **hors périmètre** : la détection automatique des mutations d'état (le remède rend la lecture bornée *possible*, il ne dit pas *ce qui* a changé).
+   - **Limite d'usage assumée** : le choix de l'ancre reste une décision du lecteur. Ancrer sur le message de la question masque la réponse qui documente l'état — vérifié sur la session source de n46 (cf. `eval/natural/runs/2026-09-20_read-at-verification-locale.md`, local) : le remède supprime la confusion avec l'état **final**, il ne dispense pas de viser la bonne borne.
+   - **Validation** : tests de fixture (`test/read.test.js`), `npm run eval` inchangé (28/28 — la recherche n'est pas touchée), vérification locale sur corpus réel non committée.
+
 ## Phase v1 — petit serveur MCP lecture seule (remonté, ex-v3 — retour d'agent)
 
 - Exposer dig/read/raw en MCP (pattern agora-scout) : les agents opencode et Agora creusent l'historique eux-mêmes.
