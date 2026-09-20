@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 
 export function ensureDir (p) { fs.mkdirSync(p, { recursive: true }) }
 
@@ -26,40 +27,53 @@ export function readJsonl (file) {
 }
 
 // ── scale-corpus : streaming (mémoire bornée, jamais le fichier entier en RAM) ──
+// Passe corrective 20/09 (revue) : les fonctions de flux sont CORRECTES EN OCTETS.
+// Découper un Buffer en chaînes via buf.toString('utf8', 0, n) corrompt tout caractère
+// multi-octet coupé à la frontière d'un bloc (un « é » devient «  ») — les preuves
+// brutes, elles, peuvent même ne pas être de l'UTF-8 du tout. D'où :
+//   - streamLines : StringDecoder, qui bufferise les séquences UTF-8 incomplètes ;
+//   - streamBytes : octets bruts, AUCUN décodage (empreinte md5 exacte, affichage raw
+//     octet pour octet — un md5 calculé sur des chaînes décodées était faux dès qu'un
+//     octet non-UTF-8 ou une coupure de frontière apparaissait) ;
+//   - scanText   : recherche de sous-chaîne en flux, avec recouvrement piloté par la
+//     longueur de l'aiguille (un match plus long que le recouvrement n'est plus perdu)
+//     et dédoublonnage par position (le recouvrement n'est plus réémis en double).
 
 const CHUNK = 1 << 20 // 1 Mo
 
 /**
  * Parcours SYNCHRONE d'un fichier texte ligne à ligne, en flux.
- * onLine(line) reçoit chaque ligne non vide. Retourne le nombre de lignes traitées.
- * L'empreinte mémoire est O(CHUNK), indépendante de la taille du fichier — un shard
- * de plusieurs Go se parcourt comme un petit.
+ * onLine(line) reçoit chaque ligne non vide ; `return false` arrête le parcours.
+ * Retourne le nombre de lignes traitées. Empreinte O(chunkSize + ligne courante),
+ * indépendante de la taille du fichier. Les caractères multi-octets coupés à la
+ * frontière d'un chunk sont reconstitués (StringDecoder), jamais corrompus.
  */
-export function streamLines (file, onLine) {
+export function streamLines (file, onLine, { chunkSize = CHUNK } = {}) {
   if (!fs.existsSync(file)) return 0
   let fd
   try { fd = fs.openSync(file, 'r') } catch { return 0 }
-  const buf = Buffer.alloc(CHUNK)
+  const buf = Buffer.alloc(chunkSize)
+  const dec = new StringDecoder('utf8')
   let carry = ''
   let n = 0
   try {
     for (;;) {
-      const read = fs.readSync(fd, buf, 0, CHUNK, null)
+      const read = fs.readSync(fd, buf, 0, chunkSize, null)
       if (read === 0) break
-      carry += buf.toString('utf8', 0, read)
+      carry += dec.write(buf.subarray(0, read))
       let start = 0
       for (;;) {
         const idx = carry.indexOf('\n', start)
         if (idx < 0) break
-        const line = carry.slice(start, idx)
+        const s = carry.slice(start, idx).trim()
         start = idx + 1
-        const s = line.trim()
         if (!s) continue
         n++
-        if (onLine(s, n) === false) { fs.closeSync(fd); return n }
+        if (onLine(s, n) === false) return n
       }
       carry = carry.slice(start)
     }
+    carry += dec.end() // séquence finale éventuellement incomplète : flush du décodeur
     const tail = carry.trim()
     if (tail) { n++; if (onLine(tail, n) === false) return n }
   } finally {
@@ -69,35 +83,100 @@ export function streamLines (file, onLine) {
 }
 
 /**
- * Lecture d'un fichier par blocs d'octets bornés, avec recouvrement aux frontières
- * (un match à cheval sur deux blocs n'est pas perdu). onBlock(blockString) ; si elle
- * retourne false, le parcours s'arrête. Empreinte mémoire O(blockSize + overlap).
+ * Lecture d'un fichier PAR OCTETS (aucun décodage), en blocs bornés.
+ * onChunk(buf, len) ; `return false` arrête. Retourne le nombre total d'octets lus.
+ * C'est le primitive d'intégrité : md5, affichage de preuve, toute utilisation où
+ * les octets doivent sortir EXACTEMENT comme ils sont entrés.
  */
-export function streamBlocks (file, { blockSize = 1 << 20, overlap = 64, onBlock } = {}) {
-  let stat
-  try { stat = fs.statSync(file) } catch { return false }
-  const fd = fs.openSync(file, 'r')
+export function streamBytes (file, onChunk, { chunkSize = CHUNK } = {}) {
+  let fd
+  try { fd = fs.openSync(file, 'r') } catch { return 0 }
+  let total = 0
   try {
-    let pos = 0
-    while (pos < stat.size) {
-      const len = Math.min(blockSize + overlap, stat.size - pos)
-      const buf = Buffer.alloc(len)
-      const read = fs.readSync(fd, buf, 0, len, pos)
+    const buf = Buffer.alloc(chunkSize)
+    for (;;) {
+      const read = fs.readSync(fd, buf, 0, chunkSize, null)
       if (read <= 0) break
-      if (onBlock(buf.toString('utf8', 0, read), pos) === false) return false
-      pos += blockSize
+      total += read
+      if (onChunk(buf.subarray(0, read), read) === false) break
     }
-    return true
   } finally {
     fs.closeSync(fd)
   }
+  return total
 }
 
-/** md5 d'un fichier, en blocs bornés (jamais le fichier entier en RAM). */
+/** md5 d'un fichier : hash des OCTETS, en blocs bornés (jamais le fichier en RAM).
+ *  Un md5 calculé sur des chaînes décodées diffère du md5 réel dès le premier octet
+ *  non-UTF-8 (les preuves brutes peuvent en contenir) ou coupure multi-octet. */
 export function md5File (file) {
   const h = crypto.createHash('md5')
-  streamBlocks(file, { blockSize: 1 << 20, overlap: 0, onBlock: (blk) => { h.update(blk) } })
+  streamBytes(file, (b) => { h.update(b) })
   return h.digest('hex')
+}
+
+function countNl (s, from, to) {
+  let n = 0
+  for (let i = from; i < to; i++) if (s.charCodeAt(i) === 10) n++
+  return n
+}
+
+/**
+ * Scan littéral insensible à la casse Unicode, mémoire O(chunkSize + aiguille).
+ * StringDecoder préserve l'UTF-8 ; le curseur de recherche est distinct du
+ * recouvrement conservé pour les matches incomplets et le contexte (64 caractères).
+ * onMatch(contexte borné à 200 caractères, ligne absolue) : false arrête le scan.
+ */
+export function scanText (file, needle, { chunkSize = CHUNK, onMatch } = {}) {
+  needle = String(needle)
+  if (!needle) return 0
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) throw new Error('chunkSize invalide')
+  // Échappement : la requête reste une sous-chaîne, jamais une expression régulière.
+  const re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu')
+  const buf = Buffer.alloc(chunkSize)
+  const dec = new StringDecoder('utf8')
+  let fd
+  try { fd = fs.openSync(file, 'r') } catch { return 0 }
+  let window = ''
+  let from = 0
+  let newlines = 0
+  let matches = 0
+  try {
+    for (;;) {
+      const read = fs.readSync(fd, buf, 0, chunkSize, null)
+      const eof = read === 0
+      window += eof ? dec.end() : dec.write(buf.subarray(0, read))
+      re.lastIndex = from
+      let m
+      let lineCursor = 0
+      let lineNo = newlines + 1
+      while ((m = re.exec(window)) !== null) {
+        const p = m.index
+        lineNo += countNl(window, lineCursor, p)
+        lineCursor = p
+        const ls = p === 0 ? 0 : window.lastIndexOf('\n', p - 1) + 1
+        let le = window.indexOf('\n', p + m[0].length)
+        if (le < 0) le = window.length
+        matches++
+        if (onMatch?.(window.slice(ls, le).trim().slice(0, 200), lineNo) === false) return matches
+        // Autorise les occurrences chevauchantes, sans couper une paire UTF-16.
+        from = p + (window.codePointAt(p) > 0xffff ? 2 : 1)
+        re.lastIndex = from
+      }
+      if (eof) break
+      // Les débuts antérieurs à cette borne ont tous été examinés intégralement.
+      from = Math.max(from, window.length - needle.length + 1, 0)
+      if (from > 0 && /[\uDC00-\uDFFF]/.test(window[from] || '')) from--
+      let drop = Math.max(0, window.length - needle.length - 64)
+      if (drop > 0 && /[\uDC00-\uDFFF]/.test(window[drop])) drop--
+      newlines += countNl(window, 0, drop)
+      window = window.slice(drop)
+      from -= drop
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+  return matches
 }
 
 // '2026' | '2026-06' | '2026-06-01' | ISO → borne ms. end=true → fin de période.

@@ -5,6 +5,7 @@
 import crypto from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
+import { corpusPaths } from './paths.js'
 
 export const LAYOUT_VERSION = 2
 
@@ -49,3 +50,8 @@ export function assertLayout (state) {
     throw new Error(`layout de corpus non support : lu v${got}, attendu v${LAYOUT_VERSION} — migrer (sdig migrate) ou re-ingérer depuis la source (sdig ingest --rebuild)`)
   }
 }
+
+// Marqueur persistant d'ingestion en cours (défini ici — layout — pour rester
+// importable par view.js sans cycle corpus.js → view.js → corpus.js).
+export function markerPath (root = corpusPaths().root) { return corpusPaths(root).marker }
+export function ingestRunning (root = corpusPaths().root) { return fs.existsSync(markerPath(root)) }

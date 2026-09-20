@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { corpusPaths } from './paths.js'
 import { streamLines } from './util.js'
-import { listShards, assertLayout } from './layout.js'
+import { listShards, assertLayout, ingestRunning } from './layout.js'
 
 export const SCHEMA = `
   CREATE TABLE meta(
@@ -158,34 +158,78 @@ export function eventCols (e) {
 }
 
 /**
- * Rebuild complet de la vue depuis le seul corpus (référence de réparation).
- * En flux (jamais le corpus entier en RAM) ; déterministe ; FTS5 inchangé
- * ('rebuild' externe sur le contenu, comme l'index v0). Retourne { events, dbFile }.
- * Tolère un état absent (corpus de test brut) : watermark (-1, -1).
- * Repli v1 : sans shards, lit events.jsonl (corpus de test / pré-migration).
+ * Passe corrective 20/09 (revue) : UNE commande = UNE transaction de lecture.
+ * Partager une connexion SQLite ne partage PAS une transaction : sans BEGIN, chaque
+ * instruction vit dans sa propre transaction et une publication concurrente peut
+ * s'intercaler entre hits, voisins et compteurs — exactement le mélange de générations
+ * que la spec interdit au sein d'une lecture. En WAL, une transaction de lecture
+ * ouverte voit TOUJOURS le même snapshot, quelles que soient les publications
+ * concurrentes, jusqu'à son COMMIT.
  */
-export function buildView (root = corpusPaths().root, { dbFile = viewPath(root) } = {}) {
-  const paths = corpusPaths(root)
-  for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true })
-  const db = openViewWrite(root, dbFile)
+export function inReadTx (db, fn) {
+  db.exec('BEGIN')
   try {
-    db.exec(SCHEMA)
-    let state = {}
-    try { state = JSON.parse(fs.readFileSync(paths.state, 'utf8')) } catch { state = {} }
-    if (state.layoutVersion != null) assertLayout(state)
+    const r = fn()
+    db.exec('COMMIT')
+    return r
+  } catch (e) {
+    try { db.exec('ROLLBACK') } catch {}
+    throw e
+  }
+}
 
-    const insSes = db.prepare('INSERT INTO sessions (id, json, title, repo, tsCreated, tsUpdated, directory, cost, parentSession) VALUES (?,?,?,?,?,?,?,?,?)')
-    const insEv = db.prepare('INSERT INTO events (id, session_id, ts, role, agent, repo, model, cmd, text, json) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    const insRef = db.prepare('INSERT OR REPLACE INTO rawrefs (rawRef, eventId, sessionId, ts, role, tool, cmd) VALUES (?,?,?,?,?,?,?)')
+/**
+ * La vue est-elle UTILISABLE comme base de la passe d'ingestion ? Passe corrective
+ * 20/09 (revue) : l'ancien test (viewIsCurrent) ne vérifiait ni la fraîcheur ni la
+ * complétude — une vue ABSENTE ou EN RETARD sur state.json faisait repartir l'ingestion
+ * d'une vue VIDE : les anciens événements restaient dans les shards mais devenaient
+ * invisibles dans une vue déclarée fraîche. Utilisable = schéma v2 + watermark présent
+ * + watermark de vue ≥ watermark de state (une vue en avance — crash entre COMMIT et
+ * state.json — est un état publié valide, le delta s'y ré-applique idempotemment).
+ */
+export function viewUsableForIngest (root = corpusPaths().root) {
+  if (!viewIsCurrent(root)) return false
+  let db
+  try { db = new Database(viewPath(root), { readonly: true, fileMustExist: true }) } catch { return false }
+  try {
+    const wm = db.prepare('SELECT message, session FROM watermark').get()
+    if (!wm) return false
+    let st = {}
+    try { st = JSON.parse(fs.readFileSync(corpusPaths(root).state, 'utf8')) } catch { return true }
+    return (st.message ?? -1) <= wm.message && (st.session ?? -1) <= wm.session
+  } catch {
+    return false
+  } finally {
+    db.close()
+  }
+}
 
-    const insertEvent = (e, jsonLine) => {
-      const { cmds, model } = eventCols(e)
-      insEv.run(e.id, e.sessionId, e.ts, e.role ?? null, e.agent ?? null, e.repo ?? null, model, cmds, e.text ?? '', jsonLine)
-      for (const c of e.toolCalls || []) {
-        if (c.rawRef) insRef.run(String(c.rawRef), e.id, e.sessionId, e.ts, e.role ?? null, c.tool ?? null, c.cmd ?? null)
-      }
+/**
+ * Population d'une vue OUVERTE depuis le seul corpus, EN FLUX (passe corrective :
+ * extraite de buildView pour servir aussi la réparation pendant l'ingestion — une
+ * vue absente/périmée est reconstruite depuis les shards AVANT d'y appliquer le
+ * delta). N'écrit PAS dans events_fts : l'appelant exécute le rebuild FTS une fois
+ * toutes les insertions faites (contenu externe → 'rebuild' repart du contenu).
+ * Repli v1 : sans shards, lit events.jsonl (corpus de test / pré-migration).
+ * Retourne le nombre d'événements (hors lignes de titre).
+ */
+export function populateView (db, root = corpusPaths().root) {
+  const paths = corpusPaths(root)
+
+  const insSes = db.prepare('INSERT INTO sessions (id, json, title, repo, tsCreated, tsUpdated, directory, cost, parentSession) VALUES (?,?,?,?,?,?,?,?,?)')
+  const insEv = db.prepare('INSERT INTO events (id, session_id, ts, role, agent, repo, model, cmd, text, json) VALUES (?,?,?,?,?,?,?,?,?,?)')
+  const insRef = db.prepare('INSERT OR REPLACE INTO rawrefs (rawRef, eventId, sessionId, ts, role, tool, cmd) VALUES (?,?,?,?,?,?,?)')
+
+  const insertEvent = (e, jsonLine) => {
+    const { cmds, model } = eventCols(e)
+    insEv.run(e.id, e.sessionId, e.ts, e.role ?? null, e.agent ?? null, e.repo ?? null, model, cmds, e.text ?? '', jsonLine)
+    for (const c of e.toolCalls || []) {
+      if (c.rawRef) insRef.run(String(c.rawRef), e.id, e.sessionId, e.ts, e.role ?? null, c.tool ?? null, c.cmd ?? null)
     }
+  }
 
+  let count = 0
+  const insertAll = db.transaction(() => {
     streamLines(paths.sessions, (line) => {
       const s = JSON.parse(line)
       insSes.run(s.id, line, s.title ?? null, s.repo ?? null, s.tsCreated ?? null, s.tsUpdated ?? null, s.directory ?? null, s.cost ?? null, s.parentSession ?? null)
@@ -197,23 +241,49 @@ export function buildView (root = corpusPaths().root, { dbFile = viewPath(root) 
         }, JSON.stringify({ schemaVersion: 1, id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title', text: s.title, repo: s.repo ?? null }))
       }
     })
-
-    let count = 0
     const shards = listShards(root)
-    const insertAll = db.transaction(() => {
-      if (shards.length) {
-        for (const rel of shards) {
-          streamLines(path.join(root, rel), (line) => { insertEvent(JSON.parse(line), line); count++ })
-        }
-      } else if (fs.existsSync(paths.events)) {
-        // corpus v1 (tests / pré-migration) : flux sur le fichier unique
-        streamLines(paths.events, (line) => { insertEvent(JSON.parse(line), line); count++ })
+    if (shards.length) {
+      for (const rel of shards) {
+        streamLines(path.join(root, rel), (line) => { insertEvent(JSON.parse(line), line); count++ })
       }
-    })
-    insertAll()
+    } else if (fs.existsSync(paths.events)) {
+      // corpus v1 (tests / pré-migration) : flux sur le fichier unique
+      streamLines(paths.events, (line) => { insertEvent(JSON.parse(line), line); count++ })
+    }
+  })
+  insertAll()
+  return count
+}
 
-    const rebuildFts = () => db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
-    rebuildFts()
+/**
+ * Rebuild complet de la vue depuis le seul corpus (référence de réparation).
+ * En flux (jamais le corpus entier en RAM) ; déterministe ; FTS5 inchangé
+ * ('rebuild' externe sur le contenu, comme l'index v0). Retourne { events, dbFile }.
+ * Tolère un état absent (corpus de test brut) : watermark (-1, -1).
+ * Repli v1 : sans shards, lit events.jsonl (corpus de test / pré-migration).
+ *
+ * Passe corrective 20/09 (revue) : REFUSE de reconstruire tant qu'une ingestion est
+ * non réconciliée (marqueur présent) — sinon le rebuild transformerait un état non
+ * publié (shards partiellement remplacés) en référence, précisément ce que les specs
+ * interdisent. La reprise explicite (`sdig ingest --recover`) passe duringRecovery :
+ * c'est une décision d'opérateur, pas un défaut.
+ */
+export function buildView (root = corpusPaths().root, { dbFile = viewPath(root), duringRecovery = false } = {}) {
+  if (!duringRecovery && ingestRunning(root)) {
+    throw new Error("ingestion en cours non réconciliée (marqueur présent) — relancer `sdig ingest` (réconciliation idempotente) ou `sdig ingest --recover` (reprise explicite) AVANT de reconstruire : un rebuild ne doit jamais faire d'un état non publié la référence")
+  }
+  const paths = corpusPaths(root)
+  for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true })
+  const db = openViewWrite(root, dbFile)
+  try {
+    db.exec(SCHEMA)
+    let state = {}
+    try { state = JSON.parse(fs.readFileSync(paths.state, 'utf8')) } catch { state = {} }
+    if (state.layoutVersion != null) assertLayout(state)
+
+    const count = populateView(db, root)
+
+    db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
 
     db.transaction(() => {
       db.prepare('INSERT INTO meta (key, value) VALUES (?,?)').run('layoutVersion', '2')

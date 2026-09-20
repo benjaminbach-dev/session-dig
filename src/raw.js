@@ -8,14 +8,10 @@
 // taille des fichiers raw. Les références (rawRef → événement) viennent de la vue
 // (table rawrefs) — jamais d'un chargement du corpus.
 import fs from 'node:fs'
-import path from 'node:path'
 import { openView } from './view.js'
 import { rawShardPath } from './layout.js'
-import { streamBlocks } from './util.js'
+import { scanText } from './util.js'
 import { corpusPaths } from './paths.js'
-
-const BLOCK = 1 << 20 // 1 Mo
-const OVERLAP = 4096 // recouvrement : les matches à cheval survivent aux frontières
 
 /**
  * Scan sous-chaîne (insensible à la casse) des sorties brutes référencées par le corpus.
@@ -25,7 +21,6 @@ const OVERLAP = 4096 // recouvrement : les matches à cheval survivent aux front
 export function rawScan (root, needle, { limit = 10 } = {}) {
   if (!needle || !needle.trim()) return []
   const paths = corpusPaths(root)
-  const low = needle.toLowerCase()
   const out = []
 
   // références depuis la vue (borné : requête indexée par rawRef)
@@ -45,21 +40,9 @@ export function rawScan (root, needle, { limit = 10 } = {}) {
     const file = rawShardPath(paths.raw, ref.rawRef)
     if (!fs.existsSync(file)) continue // sortie orpheline : ignorée
     let found = null
-    let carryLineNo = 0
-    streamBlocks(file, { blockSize: BLOCK, overlap: OVERLAP, onBlock: (block) => {
-      const lines = block.split('\n')
-      let lineNo = carryLineNo
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i]
-        if (i < lines.length - 1) lineNo++
-        if (l.toLowerCase().includes(low)) {
-          found = { line: l.trim().slice(0, 200), lineNo }
-          return false // arrêt du parcours de ce fichier
-        }
-      }
-      // ligne incomplète en fin de bloc (hors recouvrement) : on compte ce qui est complet
-      carryLineNo += lines.length - 1 - (block.endsWith('\n') ? 1 : 0)
-      return true
+    scanText(file, needle, { onMatch: (line, lineNo) => {
+      found = { line, lineNo }
+      return false // première correspondance par preuve ; algorithme traité au lot 2
     } })
     if (found) {
       out.push({

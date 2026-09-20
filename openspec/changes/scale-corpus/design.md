@@ -1,5 +1,7 @@
 # Design — scale-corpus
 
+> **État d’implémentation révisé (20/09 soir)** : ce document décrit le contrat cible, pas une attestation de conformité. Implémentation et correctifs partiels livrés ; voir [progress.md](progress.md) et les tâches rouvertes. Les garanties de verrouillage/échelle restent à prouver.
+
 ## D0 — Motivation et ordre des changes (20/09)
 
 Contrainte utilisateur : le projet doit tourner ailleurs ; corpus 20-100× plus lourd au minimum, base source PC de 4 Go (contre ~4 Mo de corpus sur téléphone). Goulets vérifiés dans le code : `readJsonl` plein-fichier (utilisé par read/raw/search CLI/ingest), `ingest` à réécriture intégrale, `raw/` plat. La recherche tient déjà (SQL pur — à confirmer au banc, cf. D5). Décision : passe échelle **avant** l'implémentation MCP — sinon la façade hérite des parcours complets et le contrat D9 du MCP (isolation du travail, timeout) enveloppe des lectures O(corpus).

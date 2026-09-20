@@ -9,12 +9,21 @@
 // Change scale-corpus (20/09) : la lecture passe par la VUE dérivable (chemin de
 // lecture unique) — fenêtres et compteurs par requêtes bornées sur la clé
 // (session_id, ts, id) : le coût dépend de la fenêtre et de la plage comptée, pas
-// de la taille du corpus ni de la session. Toutes les requêtes d'une commande
-// s'exécutent sur une unique Database ouverte (un seul snapshot : une publication
-// concurrente ne s'intercale pas entre hits, voisins et compteurs — WAL : un
-// lecteur voit toujours la dernière génération publiée, jamais une intercalée).
-// Les lignes de titre (role 'title') ne sont jamais comptées ni listées.
-import { openView } from './view.js'
+// de la taille du corpus ni de la session. Les lignes de titre (role 'title') ne
+// sont jamais comptées ni listées.
+//
+// Passe corrective 20/09 (revue) :
+//   - SNAPSHOT RÉEL : toutes les requêtes d'une commande s'exécutent dans UNE
+//     transaction de lecture (inReadTx) — partager une connexion ne partageait PAS
+//     une transaction : une publication concurrente pouvait s'intercaler entre hits,
+//     voisins et compteurs. En WAL, une transaction de lecture ouverte voit toujours
+//     le même snapshot jusqu'à son COMMIT.
+//   - FENÊTRES PAR CLÉ (keyset), PAS OFFSET : OFFSET avance en comptant les lignes
+//     sautées (coût O(position)) — un --tail ou un --around tardif sur une session
+//     géante coûtait la longueur de la session. Chaque fenêtre est bornée par la clé
+//     (ts, id) : coût O(fenêtre), quelle que soit la position. Les compteurs restent
+//     des dénombrements de plage indexés (coût documenté, mesuré au banc).
+import { openView, inReadTx } from './view.js'
 import { fmtTs } from './util.js'
 
 /** Fusionne les fenêtres [i-ctx, i+ctx] autour des index de hits. */
@@ -105,7 +114,7 @@ export function resolveAnchor (evsOrDb, anchor, allEventsOrDb = null, sessionId 
 }
 
 /** Rang d'un message dans sa session (ordre (ts, id), hors titres) — dénombrement indexé. */
-function rankOf (db, sessionId, row) {
+export function rankOf (db, sessionId, row) {
   return db.prepare("SELECT COUNT(*) n FROM events WHERE session_id = ? AND role != 'title' AND (ts < ? OR (ts = ? AND id < ?))")
     .get(sessionId, row.ts, row.ts, row.id).n
 }
@@ -115,22 +124,22 @@ const NON_TITLE = "role != 'title'"
 /**
  * Tranche d'une session par la vue (change scale-corpus) :
  *   1. ouverture de la vue (vérification fraîcheur — refus explicite sinon) ;
- *   2. requêtes bornées : compteurs par dénombrement de plage via l'index (exact,
- *      coût de plage — mesuré au banc, pas caché), fenêtres par LIMIT/OFFSET
- *      (le coût dépend de la fenêtre, pas de la session) ;
- *   3. sémantique observable inchangée (spans, maxIdx, maskedCount, anchor,
+ *   2. TOUTES les requêtes de la commande dans UNE transaction de lecture (snapshot) ;
+ *   3. requêtes bornées : compteurs par dénombrement de plage via l'index (exact,
+ *      coût de plage — mesuré au banc, pas caché), fenêtres PAR CLÉ (ts, id) ;
+ *   4. sémantique observable inchangée (spans, maxIdx, maskedCount, anchor,
  *      erreurs fatales — tests add-read-at repris tels quels).
  */
 export function sessionSlice (root, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
   const db = openView(root)
   try {
-    return sessionSliceDb(db, sessionId, { aroundId, ctx, tail, at })
+    return inReadTx(db, () => sessionSliceDb(db, sessionId, { aroundId, ctx, tail, at }))
   } finally {
     db.close()
   }
 }
 
-/** Variante à Database ouverte : toute la commande partage le même snapshot. */
+/** Variante à Database ouverte : la transaction de lecture est portée par l'appelant. */
 export function sessionSliceDb (db, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
   const meta = db.prepare('SELECT json FROM sessions WHERE id = ?').get(sessionId)
   if (!meta) return null
@@ -159,64 +168,94 @@ export function sessionSliceDb (db, sessionId, { aroundId, ctx = 10, tail, at } 
   const last = view.maxIdx
   const anchorLabel = view.anchor ? `${view.anchor.id ? `${view.anchor.id} ` : ''}(${view.anchor.date})` : ''
 
-  // fenêtre bornée : LIMIT/OFFSET sur l'ordre (ts, id) — coût = fenêtre
-  const evsFor = (fromIdx, toIdx) => {
-    if (toIdx < fromIdx) return []
-    return db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} ORDER BY ts, id LIMIT ? OFFSET ?`)
-      .all(sessionId, toIdx - fromIdx + 1, fromIdx).map(r => JSON.parse(r.json))
+  // ── fenêtres PAR CLÉ (passe corrective : OFFSET coûtait O(position)) ──
+  // La vue entière est un PRÉFIXE de l'ordre (ts, id) : les `last+1` plus petites
+  // clés sont exactement la vue visible (un message masqué a toujours une clé
+  // supérieure à celle de tout message visible). --tail part de la FIN de la vue
+  // visible — DESC borné par l'ancre, puis renversé. --around fetch ses prédécesseurs
+  // et successeurs immédiats autour de la clé du message, dans les limites des spans.
+  const evsAll = () => db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} ORDER BY ts, id LIMIT ?`)
+    .all(sessionId, last + 1).map(r => JSON.parse(r.json))
+
+  const evsBefore = (row, n) => db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?`)
+    .all(sessionId, row.ts, row.ts, row.id, n).map(r => JSON.parse(r.json)).reverse()
+
+  const evsAfter = (row, n) => db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts > ? OR (ts = ? AND id > ?)) ORDER BY ts, id LIMIT ?`)
+    .all(sessionId, row.ts, row.ts, row.id, n).map(r => JSON.parse(r.json))
+
+  const evsTail = (n) => {
+    const bound = view.anchor ? ` AND ts <= ${Number(view.anchor.ts)}` : ''
+    return db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE}${bound} ORDER BY ts DESC, id DESC LIMIT ?`)
+      .all(sessionId, n).map(r => JSON.parse(r.json)).reverse()
   }
 
   if (last < 0) {
     return { ses, events: [], total, spans: [], ...view, error: `aucun message à ou avant l'ancre ${anchorLabel} — relire sans --at pour voir la session entière` }
   }
 
-  const idxOf = (msgId) => {
-    const row = db.prepare('SELECT ts, id FROM events WHERE id = ? AND session_id = ?').get(msgId, sessionId)
-    if (!row) return -1
-    return rankOf(db, sessionId, row)
-  }
-
   if (aroundId) {
-    const idx = idxOf(aroundId)
-    if (idx < 0) {
-      return { ses, events: evsFor(0, last), total, spans: [[0, last]], ...view, error: `message ${aroundId} introuvable dans ${sessionId} — ${at ? 'session bornée par l\'ancre' : 'session complète'} affichée` }
+    const row = db.prepare('SELECT ts, id FROM events WHERE id = ? AND session_id = ?').get(aroundId, sessionId)
+    if (!row) {
+      return { ses, events: evsAll(), total, spans: [[0, last]], ...view, error: `message ${aroundId} introuvable dans ${sessionId} — ${at ? 'session bornée par l\'ancre' : 'session complète'} affichée` }
     }
+    const idx = rankOf(db, sessionId, row)
     if (idx > last) {
       return { ses, events: [], total, spans: [], aroundIdx: idx, ...view, error: `fenêtre demandée entièrement postérieure à l'ancre : ${aroundId} est masqué (ancre ${anchorLabel}) — relire sans --at pour voir la session entière` }
     }
     const spans = mergeWindows(last + 1, [idx], ctx)
-    return { ses, events: evsFor(spans[0][0], spans[spans.length - 1][1]), total, spans, aroundIdx: idx, ...view }
+    const a = spans[0][0]
+    const b = spans[spans.length - 1][1]
+    const before = evsBefore(row, Math.max(0, idx - a)) // prédécesseurs immédiats → [a, idx-1]
+    const theRow = [JSON.parse(db.prepare('SELECT json FROM events WHERE id = ?').get(aroundId).json)]
+    const after = evsAfter(row, Math.max(0, b - idx)) // successeurs immédiats → [idx+1, b]
+    return { ses, events: [...before, ...theRow, ...after], total, spans, aroundIdx: idx, ...view }
   }
 
   if (tail != null && last + 1 > tail) {
-    const from = last + 1 - tail
-    return { ses, events: evsFor(from, last), total, spans: [[from, last]], ...view }
+    const evs = evsTail(tail)
+    const from = last + 1 - evs.length
+    return { ses, events: evs, total, spans: [[from, last]], ...view }
   }
-  return { ses, events: evsFor(0, last), total, spans: [[0, last]], ...view }
+  return { ses, events: evsAll(), total, spans: [[0, last]], ...view }
 }
 
 /**
- * Voisins de hits pour la recherche --ctx : fenêtres fusionnées, lues depuis la
- * vue (requêtes bornées), dans le même snapshot que la recherche (Database passée).
- * Retourne une Map sessionId → { total, evs } : evs couvre les fenêtres fusionnées,
- * avec l'index positionnel conservé (spans alignés sur l'ordre (ts, id) de la
- * session, hors titres).
+ * Voisins de hits pour la recherche --ctx (passe corrective 20/09) : fenêtres PAR
+ * CLÉ autour de chaque hit (jamais OFFSET, jamais rankOf par rang — le rang du hit
+ * est dénombré une fois, les voisins sont les prédécesseurs/successeurs immédiats
+ * de sa clé, leurs rangs absolus se déduisent donc sans recomptage). Retourne
+ * Map sessionId → { total, evs (dense), absIdx (rang absolu de chaque ev) } :
+ * l'empreinte mémoire dépend des fenêtres, pas de la taille de la session
+ * (l'ancienne version allouait un tableau de la longueur TOTALE de la session).
  */
-export function eventsBySessionDb (db, sessionId, hitIdxs, ctx) {
+export function neighborsBySessionDb (db, sessionId, hitRows, ctx) {
   const total = db.prepare(`SELECT COUNT(*) n FROM events WHERE session_id = ? AND ${NON_TITLE}`).get(sessionId).n
   const map = new Map()
   if (!total) return map
-  const spans = mergeWindows(total, hitIdxs, ctx)
-  const out = []
-  const indexIds = new Array(total).fill(null)
-  for (const [a, b] of spans) {
-    const rows = db.prepare(`SELECT id, json FROM events WHERE session_id = ? AND ${NON_TITLE} ORDER BY ts, id LIMIT ? OFFSET ?`)
-      .all(sessionId, b - a + 1, a)
-    for (let i = 0; i < rows.length; i++) {
-      indexIds[a + i] = rows[i].id
-      out[a + i] = JSON.parse(rows[i].json)
+  const byKey = new Map() // `${ts}|${id}` → { abs, ev }
+  const put = (abs, ev) => { const k = `${ev.ts}|${ev.id}`; if (!byKey.has(k)) byKey.set(k, { abs, ev }) }
+  for (const h of hitRows) {
+    const rank = rankOf(db, sessionId, h)
+    if (h.role !== 'title') {
+      const hit = db.prepare(`SELECT json FROM events WHERE id = ? AND session_id = ? AND ${NON_TITLE}`).get(h.id, sessionId)
+      if (hit) put(rank, JSON.parse(hit.json))
     }
+    // un hit « title » n'est pas dans la séquence des messages : ses successeurs
+    // commencent au rang `rank` ; un hit message EST au rang `rank`.
+    const succBase = h.role === 'title' ? rank : rank + 1
+    const beforeN = Math.min(ctx, rank)
+    const rows = db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?`)
+      .all(sessionId, h.ts, h.ts, h.id, beforeN)
+    rows.forEach((r, i) => put(rank - 1 - i, JSON.parse(r.json))) // DESC : le plus proche d'abord
+    const rows2 = db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts > ? OR (ts = ? AND id > ?)) ORDER BY ts, id LIMIT ?`)
+      .all(sessionId, h.ts, h.ts, h.id, ctx)
+    rows2.forEach((r, i) => put(succBase + i, JSON.parse(r.json)))
   }
-  map.set(sessionId, { total, evs: out, spans, indexIds })
+  const entries = [...byKey.values()].sort((x, y) => x.abs - y.abs)
+  map.set(sessionId, {
+    total,
+    evs: entries.map(e => e.ev),
+    absIdx: entries.map(e => e.abs)
+  })
   return map
 }

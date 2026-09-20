@@ -5,11 +5,11 @@
 import { ingest, migrate, fingerprint, proofWarning, recover } from '../src/corpus.js'
 import { index, search } from '../src/retriever/bm25.js'
 import { corpusPaths, sourceDb, corpusRoot } from '../src/paths.js'
-import { openView, viewPath, viewIsCurrent } from '../src/view.js'
+import { openView, viewPath, viewIsCurrent, inReadTx } from '../src/view.js'
 import { rawShardPath } from '../src/layout.js'
 import { renderTerminal, renderJson, renderStatus, renderFingerprint } from '../src/format.js'
-import { parseDateBound, streamBlocks } from '../src/util.js'
-import { eventsBySessionDb } from '../src/read.js'
+import { parseDateBound, streamBytes } from '../src/util.js'
+import { neighborsBySessionDb } from '../src/read.js'
 import { rawScan } from '../src/raw.js'
 import fs from 'node:fs'
 import Database from 'better-sqlite3'
@@ -92,12 +92,13 @@ function parseChars (flags) {
   return n
 }
 
-function rankOf (db, sessionId, h) {
-  return db.prepare("SELECT COUNT(*) n FROM events WHERE session_id = ? AND role != 'title' AND (ts < ? OR (ts = ? AND id < ?))").get(sessionId, h.ts, h.ts, h.id).n
-}
-
-function loadSessions (db) {
-  const sessions = db.prepare('SELECT id, json FROM sessions').all().map(r => JSON.parse(r.json))
+function loadSessions (db, sessionIds = null) {
+  // sessions des hits SEULEMENT en chemin de commande (passe corrective 20/09) :
+  // charger TOUTES les sessions pour un rendu groupé coûtait O(#sessions) en mémoire.
+  const rows = sessionIds && sessionIds.length
+    ? db.prepare(`SELECT id, json FROM sessions WHERE id IN (${sessionIds.map(() => '?').join(',')})`).all(...sessionIds)
+    : db.prepare('SELECT id, json FROM sessions').all()
+  const sessions = rows.map(r => JSON.parse(r.json))
   return { sessionsById: new Map(sessions.map(s => [s.id, s])) }
 }
 
@@ -212,8 +213,10 @@ async function main () {
     if (warn) console.log(warn)
     // lecture par blocs bornés : l'empreinte mémoire ne dépend pas de la taille du fichier
     const t0 = performance.now()
-    let bytes = 0
-    streamBlocks(file, { onBlock: (blk) => { bytes += blk.length; process.stdout.write(blk) } })
+    const bytes = streamBytes(file, (blk) => {
+      let offset = 0
+      while (offset < blk.length) offset += fs.writeSync(1, blk, offset, blk.length - offset)
+    })
     if (process.env.SDIG_RAW_TIMING) process.stderr.write(`  (${(performance.now() - t0).toFixed(0)} ms, ${bytes} o)\n`)
     return
   }
@@ -229,40 +232,49 @@ async function main () {
   const limit = flags.limit ? parseInt(flags.limit, 10) : 20
   if (!Number.isFinite(limit) || limit < 1) fail('--limit : nombre invalide')
 
-  // UNE Database ouverte pour toute la commande : hits, voisins et compteurs
-  // s'exécutent dans le même snapshot (aucune génération intercalée).
+  // UNE transaction de lecture pour TOUTE la commande (passe corrective 20/09,
+  // revue) : hits, voisins, compteurs et métadonnées partagent UN snapshot —
+  // partager une connexion ne suffisait pas, une publication concurrente pouvait
+  // s'intercaler entre les requêtes.
   const db = openView(paths.root)
   try {
-    const hits = search(db, {
-      q, repo: flags.repo, session: flags.session, after, before,
-      model: flags.model, role: flags.role, agent: flags.agent,
-      limit, plain: flags.plain || flags.json
-    })
-    if (flags.json) { console.log(renderJson(hits)); return }
-    if (!hits.length && !flags.raw) { console.log('aucun résultat'); return }
-    const chars = parseChars(flags)
-    const prettify = hits.map(h => ({ ...h, role: h.role === 'title' ? 'titre' : h.role }))
-    if (hits.length) {
-      let ctxBySession = null
-      if (flags.ctx) {
-        const n = parseInt(flags.ctx, 10)
-        if (!Number.isFinite(n) || n < 0) fail('--ctx : nombre invalide')
-        // voisins depuis la vue, requêtes bornées, même snapshot que la recherche
-        const bySes = new Map()
-        for (const h of hits) {
-          if (!bySes.has(h.session_id)) bySes.set(h.session_id, [])
-          bySes.get(h.session_id).push(h)
+    const run = () => {
+      const hits = search(db, {
+        q, repo: flags.repo, session: flags.session, after, before,
+        model: flags.model, role: flags.role, agent: flags.agent,
+        limit, plain: flags.plain || flags.json
+      })
+      if (flags.json) { console.log(renderJson(hits)); return { hits, done: true } }
+      if (!hits.length && !flags.raw) { console.log('aucun résultat'); return { hits, done: true } }
+      const chars = parseChars(flags)
+      const prettify = hits.map(h => ({ ...h, role: h.role === 'title' ? 'titre' : h.role }))
+      if (hits.length) {
+        let ctxBySession = null
+        if (flags.ctx) {
+          const n = parseInt(flags.ctx, 10)
+          if (!Number.isFinite(n) || n < 0) fail('--ctx : nombre invalide')
+          // voisins PAR CLÉ autour de chaque hit (requêtes bornées, même snapshot,
+          // mémoire O(fenêtres) — jamais un tableau de la longueur de la session)
+          const bySes = new Map()
+          for (const h of hits) {
+            if (!bySes.has(h.session_id)) bySes.set(h.session_id, [])
+            bySes.get(h.session_id).push(h)
+          }
+          ctxBySession = new Map()
+          for (const [sid, hs] of bySes) {
+            ctxBySession.set(sid, neighborsBySessionDb(db, sid, hs, n).get(sid))
+          }
         }
-        ctxBySession = new Map()
-        for (const [sid, hs] of bySes) {
-          const idxs = hs.map(h => rankOf(db, sid, h)).filter(i => i >= 0)
-          ctxBySession.set(sid, eventsBySessionDb(db, sid, idxs, n).get(sid))
-        }
+        const { sessionsById } = loadSessions(db, [...new Set(hits.map(h => h.session_id))])
+        console.log(renderTerminal(prettify, sessionsById, { ctx: ctxBySession ? flags.ctx : 0, ctxBySession, plain: flags.plain, full: !!flags.full, chars }))
       }
-      const { sessionsById } = loadSessions(db)
-      console.log(renderTerminal(prettify, sessionsById, { ctx: ctxBySession ? flags.ctx : 0, ctxBySession, plain: flags.plain, full: !!flags.full, chars }))
+      return { hits }
     }
+    const { hits, done } = inReadTx(db, run)
+    if (done) return
     if (flags.raw) {
+      // scan --raw HORS snapshot : il lit les fichiers de preuve (contenu, pas la
+      // vue) — coût O(raw/) documenté, durée affichée.
       const { renderRawHits } = await import('../src/format.js')
       const t0 = performance.now()
       const matches = rawScan(paths.root, q, { limit: 10 })

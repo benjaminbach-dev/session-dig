@@ -100,8 +100,8 @@ export function renderEvent (e, { mark = '  ', hit = null, plain = false, full =
 
 export function renderTerminal (hits, sessionsById, opts = {}) {
   // Deux sources de contexte (change scale-corpus) :
-  //  - ctxBySession : Map sessionId → { total, evs, spans, indexIds } issu des
-  //    requêtes bornées de la vue (chemin de commande, CLI) ;
+  //  - ctxBySession : Map sessionId → { total, evs, absIdx } (fenêtre DENSE, rangs
+  //    absolus) issu des requêtes bornées de la vue (chemin de commande, CLI) ;
   //  - eventsBySession : Map sessionId → events complets (tests à échelle minuscule).
   const { ctx = 0, ctxBySession = null, eventsBySession = null, plain = false, full = false, chars = null } = opts
   const dim = plain ? '' : '\x1b[2m'
@@ -119,24 +119,34 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
     const win = ctx > 0 && ctxBySession ? ctxBySession.get(g.sessionId) : null
     const evs = win ? win.evs : (ctx > 0 && eventsBySession ? eventsBySession.get(g.sessionId) : null)
     if (evs) {
-      // Contexte : voisins ±ctx autour de chaque hit, fenêtres fusionnées, chronologique.
-      let hitIdxs
       if (win) {
-        hitIdxs = (win.indexIds || []).map((id, i) => (id != null && hitById.has(id) ? i : null)).filter(i => i != null)
+        // Fenêtre DENSE (passe corrective 20/09) : voisins ±ctx par CLÉ autour de
+        // chaque hit, rangs absolus connus (absIdx) — marqueurs d'écart exacts,
+        // mémoire O(fenêtres), jamais O(taille de la session).
+        const total = win.total ?? evs.length
+        const absIdx = win.absIdx || evs.map((_, i) => i)
+        if (absIdx[0] > 0) lines.push('    ⋯')
+        for (let i = 0; i < evs.length; i++) {
+          if (i > 0 && absIdx[i] !== absIdx[i - 1] + 1) lines.push('    ⋯')
+          const hit = hitById.get(evs[i].id)
+          lines.push(renderEvent(evs[i], { mark: hit ? '► ' : '  ', hit, plain, full, chars }))
+        }
+        if (absIdx[evs.length - 1] < total - 1) lines.push('    ⋯')
       } else {
-        hitIdxs = []
+        // Contexte hérité (tests à échelle minuscule) : fenêtre = session entière.
+        const hitIdxs = []
         const idxById = new Map(evs.map((e, i) => [e.id, i]))
         for (const h of g.hits) { const i = idxById.get(h.id); if (i != null) hitIdxs.push(i) }
-      }
-      for (const [a, b] of mergeWindows(win ? (win.total ?? evs.length) : evs.length, hitIdxs, ctx)) {
-        if (a > 0) lines.push('    ⋯')
-        for (let i = a; i <= b; i++) {
-          const e = evs[i]
-          if (!e) continue
-          const hit = hitById.get(e.id)
-          lines.push(renderEvent(e, { mark: hit ? '► ' : '  ', hit, plain, full, chars }))
+        for (const [a, b] of mergeWindows(evs.length, hitIdxs, ctx)) {
+          if (a > 0) lines.push('    ⋯')
+          for (let i = a; i <= b; i++) {
+            const e = evs[i]
+            if (!e) continue
+            const hit = hitById.get(e.id)
+            lines.push(renderEvent(e, { mark: hit ? '► ' : '  ', hit, plain, full, chars }))
+          }
+          if (b < evs.length - 1) lines.push('    ⋯')
         }
-        if (b < (win ? (win.total ?? evs.length) : evs.length) - 1) lines.push('    ⋯')
       }
     } else {
       for (const h of g.hits) {

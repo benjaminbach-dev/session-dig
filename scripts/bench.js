@@ -129,7 +129,7 @@ console.log(`  indexation complète : ${(performance.now() - t).toFixed(0)} ms (
 
 // ── 5. recherche rendue avec voisins (--ctx), sur le parcours complet ──
 {
-  const { eventsBySessionDb } = await import('../src/read.js')
+  const { neighborsBySessionDb } = await import('../src/read.js')
   const db = openView(root)
   const QUERIES = ['proxy quota', 'bug sqlite timeout', 'openspec', 'deepseek codex modele', 'session embeddings fusion']
   const times = []
@@ -138,8 +138,7 @@ console.log(`  indexation complète : ${(performance.now() - t).toFixed(0)} ms (
     const hits = search(db, { q, limit: 20, plain: true })
     // voisins des hits (même snapshot)
     for (const sid of new Set(hits.map(h => h.session_id))) {
-      const idxs = hits.filter(h => h.session_id === sid).map(h => db.prepare("SELECT COUNT(*) n FROM events WHERE session_id = ? AND role != 'title' AND (ts < ? OR (ts = ? AND id < ?))").get(sid, h.ts, h.ts, h.id).n)
-      eventsBySessionDb(db, sid, idxs, 3)
+      neighborsBySessionDb(db, sid, hits.filter(h => h.session_id === sid), 3)
     }
     track()
     times.push(performance.now() - t0)
@@ -172,9 +171,9 @@ console.log(`  indexation complète : ${(performance.now() - t).toFixed(0)} ms (
   const file = rawShardPath(bigRaw, first.slice(0, -4))
   const size = fs.statSync(file).size
   t = performance.now()
-  const { streamBlocks } = await import('../src/util.js')
+  const { streamBytes } = await import('../src/util.js')
   let bytes = 0
-  streamBlocks(file, { onBlock: (b) => { bytes += b.length } })
+  streamBytes(file, (b) => { bytes += b.length })
   console.log(`  preuve (${(size / 1024).toFixed(0)} Ko) lue par blocs : ${(performance.now() - t).toFixed(1)} ms`)
 }
 

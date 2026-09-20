@@ -57,34 +57,46 @@ export async function adaptPaged (dbPath, since = {}, opts = {}, onBatch) {
   try {
     const indexed = hasTimeUpdatedIndex(db)
 
-    // ── sessions (table légère, une seule passe paginée) ──
-    const sesQ = db.prepare(`SELECT * FROM session
-      WHERE time_updated > ? ${indexed ? 'AND (time_updated > ? OR (time_updated = ? AND id > ?))' : ''}
-      ${indexed ? 'ORDER BY time_updated, id' : 'ORDER BY id'} LIMIT ?`)
+    // ── sessions (table légère, pagination par clé en TOUTES configurations) ──
+    // Passe corrective 20/09 (revue) : sans index time_updated, l'ancienne version ne
+    // lisait QU'UN SEUL lot (2000 sessions) puis s'arrêtait — au-delà, des sessions
+    // étaient omises SILENCIEUSEMENT et le watermark les rendait définitivement
+    // invisibles. La boucle pagine désormais par clé : (time_updated, id) si l'index
+    // existe, sinon (id) — jusqu'à épuisement, par lots bornés.
+    const sesQ = indexed
+      ? db.prepare(`SELECT * FROM session
+      WHERE time_updated > ? AND (time_updated > ? OR (time_updated = ? AND id > ?))
+      ORDER BY time_updated, id LIMIT ?`)
+      : db.prepare(`SELECT * FROM session WHERE time_updated > ? AND id > ? ORDER BY id LIMIT ?`)
     let lastUp = -1
     let lastId = ''
     for (;;) {
       const rows = indexed
         ? sesQ.all(sinceSes, lastUp, lastUp, lastId, batchSize)
-        : sesQ.all(sinceSes, batchSize)
+        : sesQ.all(sinceSes, lastId, batchSize)
       if (!rows.length) break
-      const sessions = rows.map(extractSessionRow)
+      const maxUp = Math.max(-1, ...rows.map(r => r.time_updated ?? -1))
       onBatch({
-        sessions,
+        sessions: rows.map(extractSessionRow),
         events: [],
         rawOutputs: [],
         maxMessageUpdate: -1,
-        maxSessionUpdate: rows[rows.length - 1].time_updated
+        maxSessionUpdate: maxUp
       })
-      if (!indexed) break // table non indexée : une seule passe (légère), tri par id
-      lastUp = rows[rows.length - 1].time_updated
+      lastUp = maxUp
       lastId = rows[rows.length - 1].id
       if (rows.length < batchSize) break
     }
 
-    // ── messages : delta filtré PAR LA BASE (watermark en requête) ──
-    // Version en flux : un seul parcours (scan indexé si l'index existe), lots bornés.
-    const msgQ = db.prepare(`SELECT * FROM message WHERE time_updated > ? ORDER BY time_created, id`)
+    // ── messages : delta filtré PAR LA BASE (watermark en requête), GROUPÉS PAR SESSION ──
+    // Passe corrective 20/09 (revue) : ORDER BY session_id, time_created, id — les
+    // événements d'une session arrivent CONTIGUS (l'index source (session_id,
+    // time_created, id) sert d'ordre, pas de tri en mémoire) : l'ingestion peut
+    // vider chaque session du flux au fil de l'eau au lieu d'accumuler le delta
+    // entier en RAM (le défaut : première ingestion = corpus entier en mémoire).
+    // event.ts = message.time_created : l'ordre d'arrivée est exactement l'ordre (ts, id)
+    // des shards.
+    const msgQ = db.prepare(`SELECT * FROM message WHERE time_updated > ? ORDER BY session_id, time_created, id`)
 
     const repoQ = db.prepare('SELECT directory FROM session WHERE id = ?')
     const repoCache = new Map()

@@ -19,8 +19,10 @@ import Database from 'better-sqlite3'
 import { adaptPaged } from './adapter/opencode-page.js'
 import { atomicWrite, streamLines, ensureDir, md5File } from './util.js'
 import { corpusPaths, sourceDb } from './paths.js'
-import { shardPath, rawShardPath, assertLayout, LAYOUT_VERSION } from './layout.js'
-import { viewPath, openViewWrite, buildView, eventCols, viewIsCurrent, SCHEMA } from './view.js'
+import { shardPath, rawShardPath, assertLayout, LAYOUT_VERSION, markerPath, ingestRunning } from './layout.js'
+import { viewPath, openViewWrite, buildView, eventCols, viewUsableForIngest, populateView, SCHEMA } from './view.js'
+
+export { markerPath, ingestRunning }
 
 function readState (p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
@@ -32,19 +34,37 @@ const evSort = (a, b) => {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// ── Verrou consultatif : création exclusive (flag 'wx', atomique) du fichier de
-// verrou. La seconde ingestion échoue proprement ; les lecteurs ne verrouillent pas.
+// ── Verrou consultatif contre ingestions concurrentes (passe corrective 20/09, revue).
+// Création exclusive + reprise sur ESRCH uniquement. L'âge ne prouve pas la mort
+// du propriétaire. Ce mécanisme n'est PAS un flock : courses de reprise simultanée,
+// verrou illisible et recyclage de PID restent à durcir (voir tasks.md).
 export class CorpusLock {
   constructor (lockPath) { this.path = lockPath; this.fd = null }
   acquire () {
-    try {
-      this.fd = fs.openSync(this.path, 'wx')
-      fs.writeSync(this.fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + '\n')
-      return true
-    } catch {
-      this.fd = null
-      return false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        this.fd = fs.openSync(this.path, 'wx')
+        fs.writeSync(this.fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + '\n')
+        return true
+      } catch {
+        // Ne reprendre que si le système confirme la disparition du propriétaire.
+        let stale = false
+        try {
+          const info = JSON.parse(fs.readFileSync(this.path, 'utf8'))
+          if (typeof info.pid === 'number' && info.pid > 0 && info.pid !== process.pid) {
+            try { process.kill(info.pid, 0) } catch (e) { stale = e.code === 'ESRCH' }
+          }
+        } catch { /* illisible : refus conservateur */ }
+        if (stale) {
+          try { fs.rmSync(this.path, { force: true }) } catch {}
+          continue // retenter la création
+        }
+        this.fd = null
+        return false
+      }
     }
+    this.fd = null
+    return false
   }
   release () {
     if (this.fd != null) {
@@ -59,8 +79,7 @@ export class CorpusLock {
 // fichier, retiré en tout dernier (après state.json). Un crash après le dernier
 // rename, avant le COMMIT, ne laisse plus de `.new` ni d'écart de state.json —
 // le marqueur est le seul détecteur fiable de cet état.
-export function markerPath (root = corpusPaths().root) { return corpusPaths(root).marker }
-export function ingestRunning (root = corpusPaths().root) { return fs.existsSync(markerPath(root)) }
+// (Définiti dans layout.js, réexporté pour compat.)
 
 /** Avertissement preuves, signalé dans la sortie tant que le marqueur est présent. */
 export function proofWarning (root = corpusPaths().root) {
@@ -72,18 +91,29 @@ export function proofWarning (root = corpusPaths().root) {
  * Reprise explicite sans source : assume l'état sur disque — vue reconstruite
  * depuis le corpus tel qu'il est, watermark de state.json conservé, marqueur
  * retiré. Décision d'opérateur, jamais le défaut d'un rebuild.
+ * Passe corrective 20/09 (revue) : prend le VERROU — une reprise concurrente
+ * d'une ingestion relancée ne peut plus entrelacer leurs écritures.
  */
 export function recover (root = corpusPaths().root) {
   const paths = corpusPaths(root)
   if (!ingestRunning(root)) {
     return { done: false, note: "aucun marqueur d'ingestion en cours — rien à réconcilier" }
   }
-  const st = readState(paths.state)
-  const { events } = buildView(root)
-  fs.rmSync(paths.marker, { force: true })
-  return {
-    done: true,
-    note: `reprise explicite : vue reconstruite depuis le corpus tel qu'il est (${events} événements), watermark conservé (message=${st.message}, session=${st.session}) — la prochaine ingestion depuis la source convergera`
+  const lock = new CorpusLock(paths.lock)
+  if (!lock.acquire()) {
+    throw new Error('une opération corpus est déjà en cours (verrou consultatif) — réessayer une fois terminée')
+  }
+  try {
+    const st = readState(paths.state)
+    const { events } = buildView(root, { duringRecovery: true })
+    atomicWrite(paths.state, JSON.stringify({ ...st, counts: { events, sessions: countSessionsFile(paths.sessions) } }, null, 2) + '\n')
+    fs.rmSync(paths.marker, { force: true })
+    return {
+      done: true,
+      note: `reprise explicite : vue reconstruite depuis le corpus tel qu'il est (${events} événements), watermark conservé (message=${st.message}, session=${st.session}) — la prochaine ingestion depuis la source convergera`
+    }
+  } finally {
+    lock.release()
   }
 }
 
@@ -148,11 +178,16 @@ async function _ingest (root, paths, dbPath, opts) {
     throw new Error('corpus v1 détecté (events.jsonl sans events/) — lancer `sdig migrate` (sans la source) ou `sdig ingest --rebuild` (depuis la source)')
   }
 
-  // ── 0. marqueur AVANT tout remplacement + ramassage des temporaires orphelins ──
-  if (!ingestRunning(root)) {
+  // ── 0. marqueur AVANT tout remplacement ── ; ramassage des temporaires orphelins
+  // UNIQUEMENT en réconciliation (passe corrective 20/09, revue : le ramassage
+  // inconditionnel parcourait toute l'arborescence du corpus — O(#fichiers) — à
+  // CHAQUE passe ; les temporaires n'existent que pendant une passe interrompue,
+  // détectée par le marqueur).
+  const reconciling = ingestRunning(root)
+  if (!reconciling) {
     fs.writeFileSync(paths.marker, JSON.stringify({ startedAt: new Date().toISOString(), pid: process.pid }) + '\n')
   }
-  const swept = sweepTemporaries(root)
+  const swept = reconciling ? sweepTemporaries(root) : 0
 
   if (rebuild) {
     // Rebuild = repartir de zéro : corpus, raw et vue purgés puis régénérés.
@@ -166,23 +201,95 @@ async function _ingest (root, paths, dbPath, opts) {
     session: rebuild ? -1 : (typeof prev.session === 'number' ? prev.session : -1)
   }
 
-  // Vue : si absente ou d'une version antérieure (index v0), on construit une vue
-  // neuve sous .new et on la publie au COMMIT ; sinon on met à jour l'existant
-  // dans une transaction unique (le COMMIT est le point de publication).
-  const current = !rebuild && viewIsCurrent(root)
-  const viewFile = current ? viewPath(root) : `${viewPath(root)}.new`
+  // Vue : RÉPARABLE pendant la passe (passe corrective 20/09, revue). Une vue
+  // absente, de version antérieure ou EN RETARD sur state.json ne repart plus d'une
+  // vue VIDE — défaut : les anciens événements restaient dans les shards mais
+  // devenaient invisibles dans une vue déclarée fraîche. La base est reconstruite
+  // depuis le corpus EN FLUX, puis le delta y est appliqué. Une vue EN AVANCE
+  // (crash entre COMMIT et state.json) est un état publié valide : le delta
+  // s'y ré-applique idempotemment.
+  const usable = !rebuild && viewUsableForIngest(root)
+  const viewFile = usable ? viewPath(root) : `${viewPath(root)}.new`
 
   let maxMsgUp = -1
   let maxSesUp = -1
   let rawWritten = 0
+  let shardsTouched = 0
   const counts = { added: 0, updated: 0, unchanged: 0, sessionsAdded: 0, sessionsUpdated: 0 }
-  const stagedShards = new Map() // sessionId → Map(id → event) — sessions touchées seulement
   const sesTouched = new Map() // id → session finale (modifiées seulement)
+
+  // ── staging des shards AU FIL DU FLUX (passe corrective 20/09) : les événements
+  // arrivent groupés par session (adaptateur ORDER BY session_id) — chaque session
+  // est écrite dès qu'elle est complète, fusionnée EN FLUX avec son shard publié.
+  // Mémoire : les événements d'UNE session (prix documenté du layout), jamais
+  // l'accumulation du delta entier — l'ancienne version gardait tout en RAM
+  // jusqu'à la fin : à la première ingestion, le delta EST le corpus entier.
+  const renamesBySession = new Map() // sessionId → { from, to }
+  let cur = null // { sessionId, evs: Map(id → event) } — session en cours de réception
+
+  const writeSessionShard = (sessionId, newEvents) => {
+    const file = shardPath(root, sessionId)
+    ensureDir(path.dirname(file))
+    const tmp = `${file}.new-${process.pid}`
+    // Base de fusion : le .new déjà stagé (re-saisie défensive d'un flux désordonné)
+    // sinon le shard publié. Si la base est le tmp lui-même, préchargement au
+    // préalable (borné par la session) : on ne peut pas lire et tronquer le même
+    // fichier en même temps.
+    let preload = null
+    let base = null
+    if (fs.existsSync(tmp)) {
+      base = tmp
+      preload = []
+      streamLines(tmp, (l) => { try { preload.push(JSON.parse(l)) } catch { /* garde-fou */ } })
+    } else if (!rebuild && fs.existsSync(file)) {
+      base = file
+    }
+    const news = [...newEvents.values()].sort(evSort)
+    const fd = fs.openSync(tmp, 'w')
+    let buf = []
+    let buflen = 0
+    const write = (obj) => {
+      const line = JSON.stringify(obj)
+      buf.push(line)
+      buflen += line.length + 1
+      if (buflen >= (1 << 20)) { fs.writeSync(fd, buf.join('\n') + '\n'); buf = []; buflen = 0 }
+    }
+    try {
+      let ni = 0
+      const mergeOld = (old) => {
+        let skipOld = false
+        while (ni < news.length) {
+          const c = evSort(news[ni], old)
+          if (c < 0) { write(news[ni]); ni++ }
+          else if (c === 0) { write(news[ni]); ni++; skipOld = true; break } // même id : la nouvelle version remplace
+          else break
+        }
+        if (!skipOld) write(old)
+      }
+      if (preload) for (const old of preload) mergeOld(old)
+      else if (base) streamLines(base, (line) => { let old; try { old = JSON.parse(line) } catch { return }; mergeOld(old) })
+      while (ni < news.length) { write(news[ni]); ni++ }
+      if (buf.length) fs.writeSync(fd, buf.join('\n') + '\n')
+    } finally {
+      fs.closeSync(fd)
+    }
+    renamesBySession.set(sessionId, { from: tmp, to: file })
+    shardsTouched++
+  }
+  const finalizeCurrent = () => {
+    if (!cur) return
+    writeSessionShard(cur.sessionId, cur.evs)
+    cur = null
+  }
 
   const vdb = openViewWrite(root, viewFile)
   try {
     if (vdb.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='events'").get().n === 0) {
       vdb.exec(SCHEMA)
+    }
+    if (!usable) {
+      // base reconstruite depuis le corpus, EN FLUX, AVANT d'y appliquer le delta
+      if (!rebuild) populateView(vdb, root)
     }
     vdb.exec('BEGIN')
 
@@ -202,13 +309,13 @@ async function _ingest (root, paths, dbPath, opts) {
       const old = selEv.get(s.id)
       const sameTitle = old && old.text === (s.title ?? null)
       if (old && !sameTitle) {
-        delFts.run(old.rid, old.text ?? '', old.cmd ?? '')
+        if (usable) delFts.run(old.rid, old.text ?? '', old.cmd ?? '')
         delEv.run(s.id)
       }
       if (s.title && !sameTitle) {
         const tj = { schemaVersion: 1, id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title', text: s.title, repo: s.repo ?? null }
         const info = insEv.run(s.id, s.id, tj.ts, 'title', null, s.repo ?? null, null, null, s.title, JSON.stringify(tj))
-        insFts.run(info.lastInsertRowid, s.title, null)
+        if (usable) insFts.run(info.lastInsertRowid, s.title, null)
       }
     }
 
@@ -217,7 +324,7 @@ async function _ingest (root, paths, dbPath, opts) {
       const old = selEv.get(e.id)
       if (old) {
         if (old.json === jsonLine) { counts.unchanged++; return } // idempotence : rien à faire
-        delFts.run(old.rid, old.text ?? '', old.cmd ?? '')
+        if (usable) delFts.run(old.rid, old.text ?? '', old.cmd ?? '')
         delEv.run(e.id)
         counts.updated++
       } else {
@@ -225,12 +332,10 @@ async function _ingest (root, paths, dbPath, opts) {
       }
       const { cmds, model } = eventCols(e)
       const info = insEv.run(e.id, e.sessionId, e.ts, e.role ?? null, e.agent ?? null, e.repo ?? null, model, cmds, e.text ?? '', jsonLine)
-      insFts.run(info.lastInsertRowid, e.text ?? '', cmds)
+      if (usable) insFts.run(info.lastInsertRowid, e.text ?? '', cmds)
       for (const c of e.toolCalls || []) {
         if (c.rawRef) insRef.run(String(c.rawRef), e.id, e.sessionId, e.ts, e.role ?? null, c.tool ?? null, c.cmd ?? null)
       }
-      if (!stagedShards.has(e.sessionId)) stagedShards.set(e.sessionId, new Map())
-      stagedShards.get(e.sessionId).set(e.id, e)
     }
 
     const upsertSession = (s) => {
@@ -251,8 +356,12 @@ async function _ingest (root, paths, dbPath, opts) {
     const writeRaw = (r) => {
       const file = rawShardPath(paths.raw, String(r.id))
       ensureDir(path.dirname(file))
+      // comparaison par empreinte (passe corrective 20/09) : l'ancien readFileSync
+      // de tout le fichier doublait la mémoire transitoire sur les preuves volumineuses
       let same = false
-      try { same = fs.readFileSync(file, 'utf8') === r.content } catch { same = false }
+      try {
+        same = md5File(file) === crypto.createHash('md5').update(r.content, 'utf8').digest('hex')
+      } catch { same = false }
       if (!same) {
         const tmp = `${file}.new-${process.pid}`
         fs.writeFileSync(tmp, r.content)
@@ -262,6 +371,9 @@ async function _ingest (root, paths, dbPath, opts) {
     }
 
     // ── 1. delta lu dans la source, par lots bornés (watermark en requête) ──
+    // Les événements arrivent GROUPÉS PAR SESSION (ORDER BY session_id) : chaque
+    // session est finalisée (shard fusionné + écrit) dès que le flux passe à la
+    // suivante — jamais d'accumulation du delta entier en mémoire.
     await adaptPaged(dbPath, since, {
       batchSize: Number(process.env.SDIG_INGEST_BATCH || 2000)
     }, (batch) => {
@@ -270,6 +382,11 @@ async function _ingest (root, paths, dbPath, opts) {
         if (s.tsUpdated > maxSesUp) maxSesUp = s.tsUpdated
       }
       for (const e of batch.events) {
+        if (!cur || cur.sessionId !== e.sessionId) {
+          finalizeCurrent()
+          cur = { sessionId: e.sessionId, evs: new Map() }
+        }
+        cur.evs.set(e.id, e)
         upsertEvent(e)
         if (e.ts > maxMsgUp) maxMsgUp = e.ts
       }
@@ -277,50 +394,45 @@ async function _ingest (root, paths, dbPath, opts) {
       if (batch.maxMessageUpdate > maxMsgUp) maxMsgUp = batch.maxMessageUpdate
       if (batch.maxSessionUpdate > maxSesUp) maxSesUp = batch.maxSessionUpdate
     })
+    finalizeCurrent()
   } catch (e) {
     // Échec avant publication : rollback de la vue ; le marqueur reste posé —
     // la passe suivante réconcilie. Aucun shard partiel publié (renames non faits).
     try { vdb.exec('ROLLBACK') } catch {}
     vdb.close()
-    if (!current) { try { fs.rmSync(`${viewPath(root)}.new`, { force: true }) } catch {} }
+    if (!usable) { try { fs.rmSync(`${viewPath(root)}.new`, { force: true }) } catch {} }
     throw e
   }
 
-  // ── 2. staging : shards des sessions touchées, fusion ordonnée (ts,id), .new ──
-  const renames = []
-  for (const [sessionId, newById] of stagedShards) {
-    const file = shardPath(root, sessionId)
-    ensureDir(path.dirname(file))
-    const byId = new Map()
-    if (!rebuild && fs.existsSync(file)) {
-      streamLines(file, (line) => {
-        try { const e = JSON.parse(line); byId.set(e.id, e) } catch { /* shard jamais déchiré ; garde-fou */ }
-      })
-    }
-    for (const e of newById.values()) byId.set(e.id, e)
-    const merged = [...byId.values()].sort(evSort)
-    const tmp = `${file}.new-${process.pid}`
-    fs.writeFileSync(tmp, merged.map(e => JSON.stringify(e)).join('\n') + '\n')
-    renames.push({ from: tmp, to: file })
-  }
+  // ── 2. fin du flux : shards déjà écrits au fil de l'eau ; métadonnées en flux ──
+  const renames = [...renamesBySession.values()]
 
-  // Métadonnées de sessions : réécriture complète en flux — le seul coût O(#sessions)
-  // d'une passe, borné et documenté (ordre stable par id, octet par octet).
+  // Métadonnées de sessions : fusion EN FLUX (passe corrective 20/09, revue :
+  // l'ancienne version matérialisait TOUTES les sessions en RAM avant réécriture —
+  // le coût O(#sessions), explicitement permis par la spec, est celui du PARCOURS
+  // fusionné, pas de l'accumulation). Ordre stable par id, octet par octet.
   if (sesTouched.size > 0) {
-    const out = []
-    const pending = new Set(sesTouched.keys())
+    const touched = [...sesTouched.values()].sort(sesSort)
+    const tmp = `${paths.sessions}.new-${process.pid}`
+    const fd = fs.openSync(tmp, 'w')
+    let buf = []
+    const push = (s) => {
+      buf.push(JSON.stringify(s))
+      if (buf.length >= 1000) { fs.writeSync(fd, buf.join('\n') + '\n'); buf = [] }
+    }
+    let ti = 0
     if (!rebuild && fs.existsSync(paths.sessions)) {
       streamLines(paths.sessions, (line) => {
-        try {
-          const s = JSON.parse(line)
-          if (sesTouched.has(s.id)) { out.push(sesTouched.get(s.id)); pending.delete(s.id) } else { out.push(s) }
-        } catch { /* ligne illégale : ignorée (jamais produite par l'outil) */ }
+        let s
+        try { s = JSON.parse(line) } catch { return } // ligne illégale : ignorée (jamais produite par l'outil)
+        while (ti < touched.length && sesSort(touched[ti], s) < 0) { push(touched[ti]); ti++ }
+        if (ti < touched.length && touched[ti].id === s.id) { push(touched[ti]); ti++ } // remplace
+        else push(s)
       })
     }
-    for (const id of [...pending].sort(sesSort)) out.push(sesTouched.get(id))
-    out.sort(sesSort)
-    const tmp = `${paths.sessions}.new-${process.pid}`
-    fs.writeFileSync(tmp, out.map(s => JSON.stringify(s)).join('\n') + '\n')
+    while (ti < touched.length) { push(touched[ti]); ti++ }
+    if (buf.length) fs.writeSync(fd, buf.join('\n') + '\n')
+    fs.closeSync(fd)
     renames.push({ from: tmp, to: paths.sessions })
   }
 
@@ -330,6 +442,9 @@ async function _ingest (root, paths, dbPath, opts) {
     ensureDir(path.dirname(r.to))
     fs.renameSync(r.from, r.to)
   }
+  // vue réparée pendant la passe (base reconstruite + delta) : FTS reconstruit
+  // en une fois depuis le contenu — les insertions delta sont couvertes par le rebuild
+  if (!usable) vdb.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
   vdb.prepare('DELETE FROM watermark').run()
   vdb.prepare('INSERT INTO watermark (message, session) VALUES (?,?)').run(
     Math.max(since.message, maxMsgUp),
@@ -339,9 +454,18 @@ async function _ingest (root, paths, dbPath, opts) {
   vdb.exec('COMMIT') // ← point de publication
   vdb.pragma('wal_checkpoint(TRUNCATE)')
   vdb.close()
-  if (!current) fs.renameSync(`${viewPath(root)}.new`, viewPath(root))
+  if (!usable) fs.renameSync(`${viewPath(root)}.new`, viewPath(root))
 
-  const totals = { sessions: countSessionsFile(paths.sessions), events: countEventsView(root) }
+  // Totaux ARITHMÉTIQUES (passe corrective 20/09, revue : recompter tous les
+  // événements/sessions à chaque passe coûtait O(corpus) — la formule de coût de
+  // la spec est delta + sessions touchées + métadonnées, rien d'autre). Repli au
+  // dénombrement complet en reconstruction/réconciliation ou sans comptes fiables.
+  // Après COMMIT avant state.json, les inserts rejoués sont déjà présents :
+  // anciens comptes + counts.added sous-compterait le nouvel état publié.
+  const prevCounts = (!rebuild && usable && !reconciling && prev.counts && Number.isFinite(prev.counts.events) && Number.isFinite(prev.counts.sessions)) ? prev.counts : null
+  const totals = prevCounts
+    ? { sessions: prevCounts.sessions + counts.sessionsAdded, events: prevCounts.events + counts.added }
+    : { sessions: countSessionsFile(paths.sessions), events: countEventsView(root) }
   const state = {
     source: dbPath,
     message: Math.max(since.message, maxMsgUp),
@@ -359,7 +483,7 @@ async function _ingest (root, paths, dbPath, opts) {
     totals,
     rawWritten,
     swept,
-    shardsTouched: stagedShards.size,
+    shardsTouched,
     watermark: { message: state.message, session: state.session },
     rebuild
   }
@@ -457,7 +581,9 @@ export async function migrate (root = corpusPaths().root) {
     const rawMoved = shardFlatRaws(paths)
 
     // vue reconstruite depuis le corpus v2 fraîchement écrit (watermark de state conservé)
-    buildView(root)
+    // duringRecovery : migrate est une commande opérateur tenant le verrou, son propre
+    // marqueur est posé volontairement — le garde-fou buildView ne s'y applique pas.
+    buildView(root, { duringRecovery: true })
     const newState = {
       ...state,
       layoutVersion: LAYOUT_VERSION,
