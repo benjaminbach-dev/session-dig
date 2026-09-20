@@ -7,7 +7,7 @@
 - [x] Intégrer la revue du 20/09 soir : préfixe de sharding par condensat (les identifiants partagent `ses_`/`prt_`), formule de coût honnête (delta + sessions touchées + métadonnées), protocole de publication avec COMMIT de la vue comme point de publication, fraîcheur limitée au chemin d'ingestion (empreinte pour le hors-ingestion), coût des compteurs sur la plage, preuves par blocs, banc sur parcours complet.
 - [x] Intégrer le second retour du 20/09 soir : **marqueur persistant d'ingestion en cours** (détection fiable d'un crash après le dernier rename, avant le COMMIT ; refus des opérations d'archive, réconciliation par relance, reprise explicite sans source) ; **snapshot de lecture unique** (toutes les requêtes d'une commande dans une même transaction de lecture SQLite) ; preuves en avance signalées **dans la sortie**, pas seulement dans la documentation.
 - [x] Valider : `openspec validate scale-corpus --strict --no-interactive` et validation globale `--specs --changes --strict --no-interactive`.
-- [ ] Commit/push documentaire. Aucun début d'implémentation implicite.
+- [x] Commit/push documentaire (f5feeb2, df33ba9, cb2f37c, a0c8091). L'implémentation a suivi, sur accord explicite, en 6104bc9.
 
 ## Phase implémentation (change séparé, sur accord explicite)
 
