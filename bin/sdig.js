@@ -31,9 +31,13 @@ Filtres de recherche :
   --limit N      défaut 20
   --ctx N        affiche N messages voisins autour de chaque hit (lecture du contexte)
   --at ANCRE     (read) borne la lecture à un instant : masque les messages postérieurs
-                 à l'ancre (id de message de la session, AAAA-MM-JJ[THH:MM], ou epoch ms ;
-                 une date seule garde la journée entière visible). L'ancre est rappelée et
-                 le nombre de messages masqués est affiché — jamais de masquage silencieux.
+                 à l'ancre (id de message de la session, AAAA-MM-JJ[THH:MM] en UTC, ou
+                 epoch ms ; une date seule garde la journée entière visible). Un horodatage
+                 à la minute se place à :00 de cette minute — pour viser un message précis,
+                 donner son id ou son epoch ms. Horodatage calendairement valide exigé —
+                 2026-02-30 ou 25:00 sont refusés, jamais reportés en silence ; ancre vide
+                 = erreur. L'ancre est rappelée et le nombre de messages masqués est
+                 affiché (jamais de masquage silencieux).
                  Hors périmètre : aucune détection des changements d'état.
   --raw          cherche aussi dans les sorties brutes (stderr inclus)
   --full         texte intégral des messages (lève la limite d'affichage ; read, --ctx, hits)

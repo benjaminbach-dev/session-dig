@@ -35,26 +35,55 @@ export function mergeWindows (length, hitIdxs, ctx) {
 const EPOCH_RE = /^\d{13}$/
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/
 
+/** Nombre réel de jours d'un mois (bissextiles incluses). */
+function daysInMonth (y, mo) {
+  return new Date(Date.UTC(y, mo, 0)).getUTCDate()
+}
+
 /**
- * Résout une ancre (change add-read-at, design D1/D2) :
+ * Valide les composantes d'une date/heure (change update-read-at, design D2).
+ * `Date.UTC` normalise silencieusement les valeurs impossibles (`2026-02-30` → 2 mars,
+ * `25:00` → lendemain 01:00) : une ancre qui glisse d'un jour ou d'une heure déplacerait
+ * la vue temporelle sans le dire. On refuse, avec un motif précis.
+ */
+function validateParts ({ y, mo, d, h, mi, s }) {
+  if (mo < 1 || mo > 12) return `mois hors bornes (01-12)`
+  const max = daysInMonth(y, mo)
+  if (d < 1 || d > max) return `jour hors bornes pour ${String(mo).padStart(2, '0')}/${y} (${max} jours)`
+  if (h != null && h > 23) return 'heure hors bornes (00-23)'
+  if (mi != null && mi > 59) return 'minute hors bornes (00-59)'
+  if (s != null && s > 59) return 'seconde hors bornes (00-59)'
+  return null
+}
+
+/**
+ * Résout une ancre (change add-read-at, design D1/D2 ; durci par update-read-at) :
  *   - un id de message **de la session** → on prend son horodatage ;
- *   - un horodatage : `YYYY-MM-DD` (journée entière visible), `YYYY-MM-DDTHH:MM[:SS]`
- *     ou `YYYY-MM-DD HH:MM` (heure locale, comme l'affichage) ;
- *   - des millisecondes epoch (13 chiffres).
- * Retourne { ts, id } ou { error } — jamais un silence : une ancre fausse doit se voir.
+ *   - un horodatage, **interprété en UTC** — le référentiel de l'affichage (`fmtTs`) :
+ *     `YYYY-MM-DD` (journée entière visible), `YYYY-MM-DDTHH:MM[:SS]`, `YYYY-MM-DD HH:MM` ;
+ *   - des millisecondes epoch (13 chiffres), déjà absolues.
+ * Un horodatage calendairement impossible et une ancre vide sont refusés (jamais de
+ * report silencieux, jamais de session entière affichée par accident). Retourne
+ * { ts, id } ou { error } — une ancre fausse doit se voir.
  */
 export function resolveAnchor (evs, anchor, allEvents = null) {
   const s = String(anchor ?? '').trim()
-  if (!s) return { error: 'ancre vide' }
+  if (!s) {
+    return { error: 'ancre vide : une valeur vide n\'est pas « pas d\'ancrage » (retirer --at pour lire la session entière)' }
+  }
   if (EPOCH_RE.test(s)) return { ts: Number(s), id: null }
   const m = DATE_RE.exec(s)
   if (m) {
-    const [, y, mo, d, h, mi, sec] = m
-    const ts = h == null
-      // date seule = fin de journée : la journée demandée reste entièrement visible
-      ? new Date(+y, +mo - 1, +d, 23, 59, 59, 999).getTime()
-      : new Date(+y, +mo - 1, +d, +h, +mi, sec ? +sec : 0).getTime()
-    if (!Number.isFinite(ts)) return { error: `ancre illisible : ${s}` }
+    const y = +m[1]
+    const mo = +m[2]
+    const d = +m[3]
+    const h = m[4] == null ? null : +m[4]
+    const mi = m[5] == null ? null : +m[5]
+    const sec = m[6] == null ? null : +m[6]
+    const bad = validateParts({ y, mo, d, h, mi, s: sec })
+    if (bad) return { error: `ancre invalide : ${s} (${bad})` }
+    // date seule = fin de journée : la journée demandée reste entièrement visible
+    const ts = h == null ? Date.UTC(y, mo - 1, d, 23, 59, 59, 999) : Date.UTC(y, mo - 1, d, h, mi, sec ?? 0)
     return { ts, id: null }
   }
   const i = evs.findIndex(e => e.id === s)
@@ -63,7 +92,7 @@ export function resolveAnchor (evs, anchor, allEvents = null) {
   if (elsewhere) {
     return { error: `l'ancre ${s} appartient à la session ${elsewhere.sessionId}, pas à ${evs[0].sessionId}` }
   }
-  return { error: `ancre introuvable : ${s} (id de message de la session, date AAAA-MM-JJ[THH:MM], ou epoch ms)` }
+  return { error: `ancre introuvable : ${s} (id de message de la session, date AAAA-MM-JJ[THH:MM] en UTC, ou epoch ms)` }
 }
 
 /**
@@ -98,7 +127,9 @@ export function sessionSlice (root, sessionId, { aroundId, ctx = 10, tail, at } 
   const ses = sessionsById.get(sessionId) || null
 
   let view = { maxIdx: evs.length - 1, maskedCount: 0, anchor: null }
-  if (at != null && at !== '') {
+  // `at` fourni (même vide) n'est jamais ignoré : seul `undefined`/`null` = pas d'ancrage
+  // (change update-read-at, design D3 — une variable shell vide ne doit pas rouvrir la session).
+  if (at != null) {
     const v = anchorView(evs, at, events)
     if (v.error) return { ses, events: evs, spans: [], fatal: true, error: v.error, ...view }
     view = v

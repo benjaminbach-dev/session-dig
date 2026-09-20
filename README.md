@@ -28,7 +28,7 @@ sdig "bug proxy 461" --repo ccp-proxy --after 2026-06
 sdig "bug proxy 461" --ctx 2        # + les messages voisins (hypothèse abandonnée ?)
 sdig read <session> --around <msgId>  # dérouler la session autour du hit
 sdig read <session> --around <msgId> --full  # texte intégral (marqueur de troncation sinon)
-sdig read <session> --at <msgId|date>  # état À L'INSTANT de l'ancre : messages postérieurs masqués
+sdig read <session> --at <msgId|date>  # état À L'INSTANT de l'ancre (horodatage en UTC) : messages postérieurs masqués
 sdig raw <partId>                    # la sortie d'outil complète (preuve)
 sdig "connection refused" --raw     # chercher aussi dans les sorties brutes (stderr)
 sdig status          # état corpus / index

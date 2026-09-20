@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import { buildFixtureDb } from './helpers/fixture.js'
 import { ingest } from '../src/corpus.js'
 import { index, search } from '../src/retriever/bm25.js'
-import { mergeWindows, sessionSlice, eventsBySession } from '../src/read.js'
+import { mergeWindows, sessionSlice, eventsBySession, resolveAnchor } from '../src/read.js'
 import { rawScan } from '../src/raw.js'
 import { renderRead, renderTerminal } from '../src/format.js'
 import { loadCorpus } from '../src/corpus.js'
@@ -163,15 +163,14 @@ test('--at : inclusion de l\'instant exact (le message de l\'ancre est visible)'
   assert.ok(out.includes('explore a l\'outil bash autorisé')) // le message ancre lui-même est visible
 })
 
-test('--at : horodatage (epoch ms, heure locale) équivaut à l\'ancre message', () => {
+test('--at : epoch ms, forme UTC et date seule donnent la vue attendue', () => {
   const ms = sessionSlice(root, 'ses_at1', { at: String(A0 + 120000) })
   assert.equal(ms.maxIdx, 2)
   assert.equal(ms.anchor.id, null)
   assert.equal(ms.anchor.source, 'horodatage')
-  const d = new Date(A0 + 120000)
-  const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-  assert.equal(sessionSlice(root, 'ses_at1', { at: local }).maxIdx, 2)
-  // une date seule garde la journée entière visible (convention D1 : fin de journée)
+  // la forme horodatée est en UTC (change update-read-at) : 09:02Z = instant de la mutation
+  assert.equal(sessionSlice(root, 'ses_at1', { at: '2026-09-10T09:02' }).maxIdx, 2)
+  // une date seule garde la journée entière visible (convention : fin de journée UTC)
   assert.equal(sessionSlice(root, 'ses_at1', { at: '2026-09-10' }).maskedCount, 0)
 })
 
@@ -228,8 +227,7 @@ test('--at : la preuve reste entière (raw non filtré par le masquage)', () => 
   assert.equal(slice.events.length, 5) // la vue est bornée, la source n'est pas coupée
 })
 
-test('CLI : read --at (JSON, sortie non nulle sur ancre invalide, --at réservé à read)', () => {
-  const bin = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'sdig.js')
+test('CLI : read --at (JSON, sortie non nulle sur ancre invalide, --at réservé à read)', () => {  const bin = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'sdig.js')
   const env = { ...process.env, SESSION_DIG_HOME: root }
   const run = args => {
     try { return { code: 0, out: execFileSync('node', [bin, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }) } } catch (e) { return { code: e.status, out: String(e.stdout), err: String(e.stderr) } }
@@ -248,4 +246,73 @@ test('CLI : read --at (JSON, sortie non nulle sur ancre invalide, --at réservé
   const unknownOpt = run(['read', 'ses_at1', '--bogus', 'x'])
   assert.equal(unknownOpt.code, 1)
   assert.match(unknownOpt.err, /option inconnue : --bogus/)
+})
+
+// ── update-read-at : ancres strictes (UTC, validité calendaire, ancre vide) ──
+
+test('--at : validité calendaire stricte, aucun report silencieux', () => {
+  const cases = [
+    ['2026-02-30', /jour hors bornes/], // sinon reporté au 2 mars
+    ['2026-13-01', /mois hors bornes/],
+    ['2026-09-00', /jour hors bornes/],
+    ['2026-04-31', /jour hors bornes/],
+    ['2026-09-05T25:00', /heure hors bornes/], // sinon reporté au lendemain 01:00
+    ['2026-09-05T10:75', /minute hors bornes/],
+    ['2026-09-05T10:30:61', /seconde hors bornes/]
+  ]
+  for (const [anc, re] of cases) {
+    const s = sessionSlice(root, 'ses_at1', { at: anc })
+    assert.equal(s.fatal, true, `ancre ${anc} : doit être fatale`)
+    assert.match(s.error, /ancre invalide : /, anc)
+    assert.match(s.error, re, anc)
+    assert.deepEqual(s.spans, [], anc)
+  }
+  // années bissextiles : 2026-02-29 n'existe pas, 2028-02-29 oui
+  assert.match(sessionSlice(root, 'ses_at1', { at: '2026-02-29' }).error, /jour hors bornes/)
+  assert.equal(sessionSlice(root, 'ses_at1', { at: '2028-02-29' }).fatal, undefined)
+})
+
+test('--at : ancre vide refusée (jamais la session entière par accident)', () => {
+  for (const anc of ['', '   ']) {
+    const s = sessionSlice(root, 'ses_at1', { at: anc })
+    assert.equal(s.fatal, true, JSON.stringify(anc))
+    assert.match(s.error, /ancre vide/)
+    assert.deepEqual(s.spans, [])
+  }
+  assert.match(resolveAnchor([{ id: 'm', ts: 1 }], '').error, /ancre vide/)
+  // option absente (undefined) : la session entière reste légitime, sans ancre
+  const absent = sessionSlice(root, 'ses_at1', {})
+  assert.equal(absent.anchor, null)
+  assert.equal(absent.maskedCount, 0)
+})
+
+test('--at : horodatages résolus en UTC (même référentiel que l\'affichage)', () => {
+  const evs = [{ id: 'm1', ts: 0 }]
+  assert.equal(resolveAnchor(evs, '2026-09-05T09:00').ts, Date.UTC(2026, 8, 5, 9, 0, 0))
+  assert.equal(resolveAnchor(evs, '2026-09-05 09:00:30').ts, Date.UTC(2026, 8, 5, 9, 0, 30))
+  assert.equal(resolveAnchor(evs, '2026-09-05').ts, Date.UTC(2026, 8, 5, 23, 59, 59, 999))
+  assert.equal(resolveAnchor(evs, '1788607469932').ts, 1788607469932)
+})
+
+test('CLI : mêmes ancre et vue sous TZ=UTC, Europe/Paris, America/New_York', () => {
+  const bin = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bin', 'sdig.js')
+  const run = (tz, args) => {
+    try { return { code: 0, out: execFileSync('node', [bin, ...args], { encoding: 'utf8', env: { ...process.env, TZ: tz, SESSION_DIG_HOME: root }, stdio: ['ignore', 'pipe', 'pipe'] }) } } catch (e) { return { code: e.status, out: String(e.stdout), err: String(e.stderr) } }
+  }
+  const args = ['read', 'ses_at1', '--at', '2026-09-10T09:01', '--json']
+  const views = ['UTC', 'Europe/Paris', 'America/New_York'].map(tz => JSON.parse(run(tz, args).out))
+  for (const v of views) {
+    assert.equal(v.anchor.ts, Date.UTC(2026, 8, 10, 9, 1, 0)) // 09:01 UTC, pas 09:01 local
+    assert.equal(v.anchor.date, '2026-09-10 09:01')
+    assert.equal(v.visible, 2) // q1 (09:00) et a1 (09:01) — la mutation de 09:02 est masquée
+    assert.equal(v.maskedCount, 3)
+  }
+  // ancre vide (variable shell vide) : erreur, sortie non nulle — jamais la session entière
+  const empty = run('UTC', ['read', 'ses_at1', '--at', '', '--json'])
+  assert.equal(empty.code, 2)
+  assert.match(empty.err, /ancre vide/)
+  // date impossible : erreur explicite
+  const impossible = run('Europe/Paris', ['read', 'ses_at1', '--at', '2026-02-30'])
+  assert.equal(impossible.code, 2)
+  assert.match(impossible.err, /ancre invalide : 2026-02-30 \(jour hors bornes/)
 })
