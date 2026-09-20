@@ -67,6 +67,14 @@ Deux changes issus de l'analyse du premier passage réel (19/09) et de son resco
    - **Limite d'usage assumée** : le choix de l'ancre reste une décision du lecteur. Ancrer sur le message de la question masque la réponse qui documente l'état — vérifié sur la session source de n46 (cf. `eval/natural/runs/2026-09-20_read-at-verification-locale.md`, local) : le remède supprime la confusion avec l'état **final**, il ne dispense pas de viser la bonne borne.
    - **Validation** : tests de fixture (`test/read.test.js`), `npm run eval` inchangé (28/28 — la recherche n'est pas touchée), vérification locale sur corpus réel non committée.
 
+## Phase v0.6 — échelle du corpus et de la vue — **SPECS ÉCRITES le 20/09 (change `scale-corpus`, documentaire)**
+
+Contrainte posée par l'utilisateur : le projet doit tourner ailleurs — corpus 20-100× plus lourd au minimum, base source PC de 4 Go. Vérification code : la recherche tient (SQL pur FTS5) ; `readJsonl` plein-fichier, l'ingestion à réécriture intégrale et `raw/` plat cassent à l'échelle.
+
+- ✅ Specs poussées (`scale-corpus`) : layout v2 éclaté en shards par session (enregistrements inchangés, `layoutVersion` dans state.json, refus explicite des autres versions) ; ingestion **O(delta)** (seuls les shards touchés réécrits, verrou flock, écritures atomiques, convergence après interruption) ; **vue dérivable SQLite en chemin de lecture unique** (JSON intégral + métadonnées, fenêtres bornées, fraîcheur vérifiée — refus explicite si vue absente/périmée, `read` devient dépendant de la vue) ; **mémoire bornée partout** (streaming, aucune commande ne charge le corpus entier) ; migration v1→v2 sans source ; empreinte déterministe du corpus (remplace le md5 de fichier unique dans les conditions d'éval) ; cibles re-visées au banc synthétique 100× (recherche p95 < 100 ms @ 500k événements).
+- Décision d'ordre : **v0.6 code avant v1 MCP** — sinon la façade MCP hérite des parcours complets et ses workers gonflent en RAM. La spec MCP ouverte reste valable telle quelle (size-agnostique) ; son implémentation ajoutera « workers sans chargement complet » (satisfait de facto par la vue).
+- ⏳ Implémentation : change séparé, sur accord explicite.
+
 ## Phase v1 — petit serveur MCP lecture seule (remonté, ex-v3 — retour d'agent)
 
 - Exposer dig/read/raw en MCP (pattern agora-scout) : les agents opencode et Agora creusent l'historique eux-mêmes.
