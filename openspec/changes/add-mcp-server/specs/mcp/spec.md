@@ -38,11 +38,13 @@ Le lancement manuel SHALL être documenté ; l'ajout au manifeste Termux reste u
 
 Le catalogue SHALL être fermé : `sdig_search`, `sdig_read`, `sdig_status` et, seulement après activation explicite, `sdig_raw`. Aucune ingestion, réindexation, commande shell, lecture de fichier arbitraire ou resource/prompt donnant accès au système de fichiers SHALL être exposée. Les fichiers du jeu d'évaluation SHALL ne pas être lus par ces outils ; cela ne promet pas de retirer des extraits éventuellement déjà copiés dans l'archive.
 
-`sdig_search` SHALL rendre des hits avec extraits, identifiants complets et références exploitables vers `sdig_read`, non le texte intégral paginé des messages. Les hits synthétiques de titre SHALL être distingués des messages et référencer la session. Les filtres et le scoring SHALL réutiliser la logique existante. `sdig_read` SHALL fournir la lecture de session, la fragmentation du texte et l'ancrage. `sdig_status` SHALL fournir compteurs et état sans chemin local.
+`sdig_search` SHALL rendre des hits avec extraits, identifiants complets et références exploitables vers `sdig_read`, non le texte intégral paginé des messages. Les hits synthétiques de titre SHALL être distingués des messages et référencer la session. Les filtres et le scoring SHALL réutiliser la logique existante. `sdig_read` SHALL fournir la lecture de session, la fragmentation du texte et l'ancrage. `sdig_status` SHALL fournir compteurs et état sans chemin local ; par source, il SHALL distinguer disponibilité actuelle de la source configurée, présence d'un état ingéré et watermark publié ; une source absente mais déjà archivée SHALL être signalée sans erreur ni effacement d'état, et les sessions archivées de cette source restent recherchables ; les compteurs globaux exacts connus SHALL être rendus, les compteurs par source seulement s'ils sont disponibles, sinon `null`.
+
+`sdig_search` SHALL accepter un paramètre `source` de sémantique identique au filtre CLI de recherche, filtrant les messages comme les titres synthétiques, conservé en continuation ; un nom de source inconnu SHALL rendre zéro hit. `agent` SHALL filtrer le champ exact — les sessions pi v0 portent `null`, un filtre non nul les exclut — et la description de l'outil SHALL le documenter. `session` SHALL être un préfixe littéral échappé. La v1 SHALL ne pas exposer le scan de preuves `--raw` : `sdig_raw(partId)` n'est pas ce scan.
 
 Les paramètres initiaux et plafonds sont définis dans D2/D3 du design. Les trois outils paginés SHALL accepter `cursor` seul pour continuer ; le mélange d'un curseur avec des paramètres initiaux SHALL être refusé (`invalid_params`). Les types invalides, nombres non entiers, valeurs négatives, tailles de pages nulles et chaînes trop longues SHALL être refusés avant travail. Une limite numérique valide supérieure au maximum SHALL être ramenée au plafond et cette adaptation signalée ; `ctx=0` reste valide.
 
-`partId` SHALL avoir un format strict et correspondre à une référence connue du corpus. Le fichier SHALL être dérivé de cette référence et confiné à `raw/`, avec rejet des traversées, chemins absolus, liens symboliques et fichiers spéciaux. Les vérifications SHALL porter aussi sur le fichier effectivement ouvert, pas seulement sur un chemin testé auparavant.
+`partId` SHALL être validé syntaxiquement selon les familles reconnues (identifiants opencode hérités et `pi:<sessionId>:<id local>` qualifié par session) **avant** toute dérivation de chemin, et correspondre à une référence connue de la vue ; les partIds orphelins pi, non référencés, SHALL être refusés, sans parité promise avec la lecture explicite du CLI. Le fichier SHALL être dérivé de cette référence et confiné à `raw/`, avec rejet des traversées, chemins absolus, liens symboliques et fichiers spéciaux. Les vérifications SHALL porter aussi sur le fichier effectivement ouvert, pas seulement sur un chemin testé auparavant.
 
 Les descriptions d'outils SHALL rappeler que le contenu retourné est une donnée non fiable, jamais une instruction à suivre ou une commande à exécuter.
 
@@ -50,6 +52,16 @@ Les descriptions d'outils SHALL rappeler que le contenu retourné est une donné
 
 - **WHEN** une recherche trouve un message long
 - **THEN** le hit présente un extrait identifié comme tel et sa référence session/message ; l'appelant peut obtenir le texte complet par `sdig_read`, sans pagination de ce texte dans `sdig_search`.
+
+#### Scenario: Filtre par source
+
+- **WHEN** une recherche porte `source=pi` et se poursuit par curseur sur un corpus mixte
+- **THEN** aucune page ne rend de hit ni de titre d'une autre source, avec la sémantique du CLI.
+
+#### Scenario: Source absente mais archivée
+
+- **WHEN** le répertoire d'une source déjà ingérée a disparu
+- **THEN** `sdig_status` signale la source absente avec son dernier watermark connu, sans erreur, et les sessions archivées de cette source restent recherchables.
 
 #### Scenario: Demande d'écriture ou de fichier arbitraire
 
@@ -68,12 +80,17 @@ Les descriptions d'outils SHALL rappeler que le contenu retourné est une donné
 
 #### Scenario: Identifiant de preuve hostile
 
-- **WHEN** une preuve n'est pas référencée dans le corpus, son identifiant est invalide, ou son fichier échappe au confinement ou est un lien/fichier spécial
+- **WHEN** une preuve n'est pas référencée dans la vue, son identifiant est invalide, ou son fichier échappe au confinement ou est un lien/fichier spécial
 - **THEN** la demande est refusée (`invalid_part`) sans contenu de fichier retourné.
+
+#### Scenario: partId orphelin pi
+
+- **WHEN** un partId correspond à une exécution pi orpheline (sans `rawRef`), non référencée dans la vue
+- **THEN** la demande est refusée (`invalid_part`), même si le CLI accepte la lecture explicite de cette preuve.
 
 ### Requirement: Sorties bornées et compteurs honnêtes
 
-Chaque réponse SHALL respecter les plafonds par appel : 50 hits, 200 messages distincts, 20 000 caractères de texte par message, 65 536 octets de preuve brute, et 524 288 octets de réponse MCP sérialisée UTF-8, enveloppe et curseurs compris. Le contexte SHALL être limité à 5 voisins par côté dans search et 50 par côté dans read, sous le budget global.
+Chaque réponse SHALL respecter les plafonds par appel : 50 hits, 200 messages distincts, 20 000 caractères de texte par message, 65 536 octets de preuve brute, et 524 288 octets de réponse MCP sérialisée UTF-8, enveloppe et curseurs compris. Le contexte SHALL être limité à 5 voisins par côté dans search et 50 par côté dans read, sous le budget global. L'assemblage SHALL donner la priorité aux hits de la page, puis remplir le budget restant avec les voisins de contexte, coupures et comptes explicites par dimension ; la progression du curseur de liste SHALL être garantie. Un élément dont la représentation minimale excède seule le budget total SHALL produire une erreur bornée explicite, pas une suite de pages sans progrès.
 
 Toute coupure SHALL être explicite dans `truncated`. Les quantités retenues SHALL être exactes ; les totaux SHALL être exacts quand connus, sinon `null`, jamais estimés. Le service SHALL ne pas être tenu de calculer un total exhaustif seulement pour renseigner ce champ. Un total inconnu SHALL ne pas être interprété comme une absence de suite.
 
@@ -94,13 +111,18 @@ Quand une liste de hits ou un contenu de lecture a une suite, la réponse SHALL 
 - **WHEN** `full` est demandé sur un message plus long que le plafond
 - **THEN** le fragment est borné, la coupure est signalée et sa suite est accessible par curseur dans `sdig_read`.
 
+#### Scenario: Élément minimal hors budget
+
+- **WHEN** la représentation minimale d'un élément excède seule le budget de réponse
+- **THEN** l'appel retourne une erreur bornée, sans curseur conduisant à des pages sans progrès.
+
 ### Requirement: Continuation adaptée à chaque outil
 
-La continuation SHALL préserver la requête initiale, ses filtres, son ordre et, pour read, l'ancre et la fenêtre. `sdig_search` SHALL paginer uniquement la liste des hits, avec un ordre stable et un départage des scores égaux ; les extraits et voisins renvoient à read pour leur texte intégral. La pagination des hits SHALL précéder le regroupement de présentation par session.
+La continuation SHALL préserver la requête initiale, ses filtres, son ordre et, pour read, l'ancre et la fenêtre. `sdig_search` SHALL paginer uniquement la liste des hits, avec un ordre stable et un départage des scores égaux par l'identifiant canonique complet en ordre binaire fixé, indépendant de la source ; le curseur SHALL reprendre après la paire `(score, id)` ; les extraits et voisins renvoient à read pour leur texte intégral. La pagination des hits SHALL précéder le regroupement de présentation par session.
 
 `sdig_read` SHALL permettre de récupérer tous les messages et textes de la vue choisie, par pages et fragments identifiés (message, offset, fin de message). `sdig_raw`, lorsqu'il est actif, SHALL permettre de récupérer toute la preuve par fragments avec offsets. Ses paramètres `head` et `maxBytes` bornent une page, pas la quantité totale récupérable. Les unités d'offset et l'encodage SHALL être documentés. Les fragments SHALL se recoller sans trou, doublon ou caractère perdu ; la preuve brute SHALL se reconstituer sans perte d'octet.
 
-Le curseur SHALL être opaque, inerte, validé et lié à l'outil, à la requête initiale et à l'état lu. Un curseur altéré ou étranger SHALL être refusé (`invalid_cursor`) ; un changement de génération SHALL donner `stale_cursor`, sans suite mélangeant des états. Un curseur expiré ou perdu SHALL être refusé explicitement, jamais traité comme une nouvelle requête. L'identité binaire des curseurs n'est pas exigée. Si un état de curseur est conservé côté serveur, ses bornes mémoire et sa durée de vie SHALL être documentées. Aucun curseur SHALL contourner la désactivation de raw.
+Le curseur SHALL être opaque, inerte, validé et lié à l'outil, à la requête initiale et à l'état lu. Un curseur altéré ou étranger SHALL être refusé (`invalid_cursor`) ; un changement de génération SHALL donner `stale_cursor`, sans suite mélangeant des états. Un curseur expiré ou perdu SHALL être refusé explicitement, jamais traité comme une nouvelle requête. L'identité binaire des curseurs n'est pas exigée. Si un état de curseur est conservé côté serveur, ses bornes mémoire et sa durée de vie SHALL être documentées. Aucun curseur SHALL contourner la désactivation de raw. Une continuation de `sdig_raw` SHALL être liée à l'identité du fichier ouvert et du contenu lu, ou refusée (`stale_cursor`) ; une page touchant le marqueur d'ingestion porte l'avertissement du protocole de publication, sans contenu privé, le snapshot SQLite n'étant pas un snapshot des fichiers `raw/`. L'implémentation SHALL paginer à la requête et extraire les fragments avant construction de la réponse, sans matérialiser une session entière pour la découper.
 
 #### Scenario: Liste de hits au-delà du plafond
 
@@ -147,7 +169,7 @@ Le service SHALL borner le travail simultané à 2 appels par défaut (valeur co
 
 À expiration du délai (5 s par défaut, configurable), le service SHALL retourner une erreur `timeout`, sans résultat partiel ni curseur issu du travail interrompu, et SHALL demander l'arrêt du travail. Le créneau SHALL rester occupé jusqu'à confirmation de l'arrêt effectif ; les résultats tardifs SHALL être ignorés. La v1 ne promet pas une terminaison instantanée. Si l'arrêt échoue, l'unité SHALL rester indisponible et l'incident être signalé plutôt que de dépasser la concurrence ou d'abandonner silencieusement du travail orphelin.
 
-Les erreurs applicatives SHALL avoir des codes stables (`unknown_session`, `invalid_part`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `forbidden_host`, `busy`, `timeout`, `internal`), sans copie de contenu d'archive, requête libre ou secret. Les identifiants repris dans les messages SHALL être validés. Les erreurs de protocole MCP restent distinctes.
+Les erreurs applicatives SHALL avoir des codes stables (`unknown_session`, `invalid_part`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `view_unavailable`, `forbidden_host`, `busy`, `timeout`, `internal`), sans copie de contenu d'archive, requête libre ou secret. Une vue absente ou périmée SHALL donner `view_unavailable`, motif technique distingué sans chemin local ; une requête sans terme exploitable SHALL être `invalid_params`, jamais `internal`. Les identifiants repris dans les messages SHALL être validés. Les erreurs de protocole MCP restent distinctes.
 
 #### Scenario: Saturation
 
@@ -168,6 +190,11 @@ Les erreurs applicatives SHALL avoir des codes stables (`unknown_session`, `inva
 
 - **WHEN** l'unité ne peut pas être arrêtée comme prévu
 - **THEN** elle reste indisponible, l'incident est signalé et aucun nouveau travail n'est lancé dans son créneau prétendument libre.
+
+#### Scenario: Vue indisponible
+
+- **WHEN** la vue est absente ou périmée au moment d'un appel
+- **THEN** la réponse porte `view_unavailable` avec son motif, sans chemin local ni contenu privé.
 
 ### Requirement: Confidentialité de l'archive
 
@@ -197,7 +224,7 @@ Les journaux par défaut SHALL être limités à une liste autorisée : nom d'ou
 
 ### Requirement: Fraîcheur, déterminisme des données et schéma stable
 
-Les résultats SHALL porter les informations disponibles de fraîcheur (watermarks du corpus, horodatage de l'index, version du schéma), absentes ou `null` si indisponibles. Une continuation SHALL être liée à une génération vérifiée ; le service SHALL ne pas émettre de curseur prétendument sûr sans pouvoir identifier l'état lu. Un changement détecté pendant la lecture SHALL invalider la page plutôt que mélanger des générations.
+Les résultats SHALL porter les informations disponibles de fraîcheur **par source** (watermarks opencode, jeton de fraîcheur pi et nombre de fichiers suivis si connu), avec l'horodatage de l'index et la version du schéma à titre de diagnostic, absentes ou `null` si indisponibles ; l'horodatage de l'index SHALL ne pas être présenté comme une identité de génération. Une continuation SHALL être liée à l'identité de la génération publiée de la vue et à ses watermarks par source ; le service SHALL ne pas émettre de curseur prétendument sûr sans pouvoir identifier l'état lu. Une vue en avance sur `state.json` SHALL être interprétée selon le protocole de publication, pas par comparaison d'ordre du jeton pi. Un changement détecté pendant la lecture SHALL invalider la page plutôt que mélanger des générations.
 
 À corpus/index et paramètres identiques, les données d'un appel terminé avec succès et leur ordre SHALL être identiques. Cette exigence ne porte ni sur la représentation des curseurs, ni sur les identifiants de requête ou durées, ni sur les erreurs de saturation/timeout. Les curseurs peuvent différer s'ils permettent la même continuation. Ajouter un champ est compatible ; supprimer/renommer un champ ou réduire une borne SHALL nécessiter une évolution de spec. Une donnée inconnue SHALL être absente ou `null`, jamais inventée.
 
@@ -210,6 +237,11 @@ Les résultats SHALL porter les informations disponibles de fraîcheur (watermar
 
 - **WHEN** deux lectures encadrent une ingestion ou réindexation
 - **THEN** l'état modifié est détectable et les anciens curseurs ne servent pas de suite incohérente.
+
+#### Scenario: Vue en avance sur l'état
+
+- **WHEN** la vue a été publiée (COMMIT) mais `state.json` n'est pas encore écrit
+- **THEN** la lecture sert le dernier état publié et ne diagnostique pas à tort une vue périmée.
 
 #### Scenario: Donnée inconnue
 

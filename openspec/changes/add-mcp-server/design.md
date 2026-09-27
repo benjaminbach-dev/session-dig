@@ -19,12 +19,14 @@ Ce change reste **documentaire**. Aucun SDK installé, aucun code MCP, aucun ser
 
 | Outil | Paramètres initiaux | Réponse et suite |
 |---|---|---|
-| `sdig_search` | `query` obligatoire (≤ 512 caractères), `repo`, `session`, `after`, `before`, `model`, `role`, `agent`, `limit` (défaut 10, max 50), `ctx` (0–5) | hits groupés par session, extraits et identifiants complets ; curseur pour les hits suivants ; texte complet via `sdig_read` |
+| `sdig_search` | `query` obligatoire (≤ 512 caractères), `repo`, `session` (préfixe littéral échappé), `after`, `before`, `model`, `role`, `agent`, `source`, `limit` (défaut 10, max 50), `ctx` (0–5) | hits groupés par session, extraits et identifiants complets ; curseur pour les hits suivants ; texte complet via `sdig_read` |
 | `sdig_read` | `session` obligatoire, `around`, `ctx` (0–50), `tail` (1–200), `at`, `chars` (1–20 000), `full` | vue temporelle, fragments de messages et curseur de continuation |
 | `sdig_raw` | `partId` obligatoire, `head` (1–2 000 lignes par page), `maxBytes` (1–65 536 octets par page) | fragments de preuve, `unvetted: true`, continuation ; outil absent par défaut |
 | `sdig_status` | aucun | compteurs, watermark, état de l'index ; aucun chemin local |
 
 Les trois outils paginés acceptent aussi `cursor`. Pour continuer, l'appelant fournit le curseur seul ; il n'a pas à répéter les paramètres initiaux. Un mélange curseur + paramètres de nouvelle requête est refusé (`invalid_params`). `status` n'a pas de curseur.
+
+`sdig_search` accepte `source` (`opencode`|`pi`), de sémantique identique au filtre CLI du change pi-adapter — messages et titres synthétiques —, conservé en continuation ; un nom inconnu rend zéro hit, pas une erreur. `agent` filtre le champ exact : en v0 pi ce champ est `null`, donc un filtre non nul exclut tous les messages pi ; les descriptions d'outils le documentent. La v1 n'expose pas le scan `--raw` : `sdig_raw(partId)` n'est pas ce scan, et un éventuel scan MCP ultérieur serait opt-in, filtrerait avant lecture des preuves et définirait son propre budget — il ne découle pas de `source`.
 
 La recherche fournit un moyen de repérer les sources, **pas un second lecteur intégral**. Un extrait coupé porte son caractère d'extrait et une référence exploitable (session et message) vers `read`. Les résultats synthétiques de titre sont identifiés comme tels et pointent vers la session, pas vers un faux message. Les voisins de contexte sont eux aussi des extraits référencés.
 
@@ -35,6 +37,8 @@ Aucune sous-commande d'écriture, aucun shell, aucune URL ou chemin de fichier c
 ## D3 — Bornes et compteurs honnêtes
 
 Plafonds par appel : **50 hits**, **200 messages distincts**, **50 voisins de contexte par côté dans read** (`ctx≤50`, et `ctx≤5` dans search), **20 000 caractères de texte par message**, **65 536 octets de preuve brute**, **524 288 octets de réponse MCP sérialisée UTF-8**. Le budget total inclut les métadonnées, curseurs et éventuelles représentations dupliquées dans l'enveloppe MCP ; les fragments sont réduits avant sérialisation finale pour le respecter.
+
+- Priorité d'assemblage (arbitrage du 26/09) : les hits de la page précèdent leurs voisins de contexte ; les voisins remplissent le budget restant, coupures et comptes explicites par dimension, progression du curseur de liste garantie. Un élément dont la représentation minimale excède seule le budget total produit une erreur bornée, pas une boucle de curseurs sans progrès.
 
 - `truncated` identifie les dimensions coupées, les quantités retenues exactes et, pour chacune, le total exact s'il est connu, sinon `null`. Aucun total estimé, aucun `COUNT` exhaustif obligatoire seulement pour renseigner un compteur.
 - L'absence de total exact ne signifie pas qu'il n'existe plus de résultats. La continuation de liste peut utiliser une lecture d'un élément supplémentaire pour savoir si une page suivante existe, sans compter tous les hits.
@@ -51,21 +55,22 @@ Le masquage n'est pas un contrôle d'accès : une nouvelle requête sans ancre r
 ## D5 — Preuves brutes et fichiers
 
 - `sdig_raw` absent du catalogue par défaut ; activation explicite `expose_raw: true`, journalisée. Aucune continuation ne contourne une désactivation ultérieure de l'outil.
-- `partId` est une entrée non fiable : format strict, existence dans les références du corpus, fichier dérivé de cette référence uniquement.
+- `partId` est une entrée non fiable : validation syntaxique bornée des familles reconnues (identifiants opencode hérités, `pi:<sessionId>:<id local>` qualifié par session), existence dans les références de la vue, fichier dérivé de cette référence uniquement — la validation précède toute dérivation de chemin. Les partIds orphelins pi (exécutions sans `rawRef`) ne sont pas référencés dans la vue : refusés `invalid_part` en v1, sans parité avec la lecture explicite du CLI. Les caractères admis et longueurs maximales sont épinglés dans le change d'implémentation après confrontation aux fixtures des deux adaptateurs.
 - Résolution confinée à `raw/`, rejet des traversées, chemins absolus, liens symboliques et fichiers spéciaux. Contrôler le chemin canonique, l'ouverture sans suivi du lien final (`O_NOFOLLOW`) et le type du fichier effectivement ouvert ; expliciter les hypothèses sur les répertoires parents et tester les substitutions de fichier. Ne pas prétendre qu'un `realpath` préalable suffit à supprimer les courses.
 - Réponse `unvetted: true` et bornée, y compris en continuation. Le CLI n'est pas modifié.
+- Une continuation raw est liée à l'identité du fichier ouvert et du contenu lu ; invérifiable = `stale_cursor`. Une page touchant le marqueur d'ingestion porte l'avertissement du protocole de publication, sans contenu privé ; le snapshot SQLite n'est pas un snapshot des fichiers `raw/`.
 
 ## D6 — Concurrence et erreurs
 
 Deux appels de travail simultanés par défaut (configuration bornée et documentée à l'implémentation). Au-delà : `busy`, sans file non bornée. Un travail en cours d'arrêt occupe toujours son créneau.
 
-Codes stables des erreurs applicatives : `unknown_session`, `invalid_part`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `forbidden_host`, `busy`, `timeout`, `internal`. Les erreurs ne recopient ni contenu d'archive, ni requête libre, ni secret. Les identifiants ne peuvent être repris dans une erreur ou un journal qu'après validation de leur format. Les erreurs de protocole MCP restent distinctes.
+Codes stables des erreurs applicatives : `unknown_session`, `invalid_part`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `view_unavailable`, `forbidden_host`, `busy`, `timeout`, `internal`. Une vue absente ou périmée donne `view_unavailable`, motif technique distingué sans chemin local ni contenu privé ; une requête sans terme exploitable (stopwords seuls) est `invalid_params`, jamais `internal`. Les erreurs ne recopient ni contenu d'archive, ni requête libre, ni secret. Les identifiants ne peuvent être repris dans une erreur ou un journal qu'après validation de leur format. Les erreurs de protocole MCP restent distinctes.
 
 ## D7 — Fraîcheur et déterminisme utile
 
-Les résultats de lecture portent `freshness: { watermarkMessage, watermarkSession, indexMtime, corpusVersion }`, valeurs absentes ou `null` si indisponibles. Pour les continuations, une empreinte de génération vérifiée lie les pages à l'état lu ; ne pas émettre de curseur prétendument sûr si cet état ne peut pas être identifié. Un changement détecté pendant la lecture invalide la page plutôt que d'assembler des générations différentes.
+Les résultats de lecture portent `freshness: { sources, indexMtime, corpusVersion }` : `sources` est indexé par source — opencode expose ses deux watermarks, pi son jeton déterministe et son nombre de fichiers suivis si connu —, valeurs absentes ou `null` si indisponibles. `indexMtime` est un diagnostic, jamais une identité de génération. Pour les continuations, l'identité de la génération **publiée de la vue** et ses watermarks par source lient les pages à l'état lu ; ne pas émettre de curseur prétendument sûr si cet état ne peut pas être identifié. Une vue en avance sur `state.json` (COMMIT avant écriture d'état) s'interprète selon le protocole de publication, jamais par comparaison d'ordre du jeton pi. Un changement détecté pendant la lecture invalide la page plutôt que d'assembler des générations différentes ; toutes les requêtes SQL d'une page partagent un snapshot.
 
-À corpus/index et paramètres identiques, **les données d'un appel achevé avec succès et leur ordre** sont identiques. Les curseurs opaques, identifiants de requête et durées peuvent différer ; timeout et saturation sont des événements d'exécution, pas des données déterministes. L'ordre des hits doit être stable, avec départage des scores égaux par identifiant ; la pagination précède le regroupement de présentation par session.
+À corpus/index et paramètres identiques, **les données d'un appel achevé avec succès et leur ordre** sont identiques. Les curseurs opaques, identifiants de requête et durées peuvent différer ; timeout et saturation sont des événements d'exécution, pas des données déterministes. L'ordre des hits doit être stable, avec départage des scores égaux par l'identifiant canonique complet en ordre binaire fixé, indépendant de la source ; le curseur de recherche reprend après la paire `(score, id)`. La pagination précède le regroupement de présentation par session.
 
 Ajouter un champ est compatible ; retirer/renommer un champ ou réduire une borne exige un changement de spec. Une donnée indisponible n'est jamais inventée.
 
@@ -74,6 +79,7 @@ Ajouter un champ est compatible ; retirer/renommer un champ ou réduire une born
 - `search` : pagination **de la liste des hits**, filtres et ordre conservés. Pas de texte intégral fragmenté dans les hits ni dans leur contexte ; référence vers `read` pour ce besoin.
 - `read` : pagination de la vue choisie et fragmentation des messages longs, avec identifiant de message, offset et indicateur de fin de message. Une même vue peut couvrir plusieurs pages ; aucun contenu de cette vue ne devient inaccessible à cause d'un plafond.
 - `raw` actif : fragmentation de la preuve avec offsets explicites. `head` et `maxBytes` bornent chaque page, pas la quantité totale récupérable.
+- Pagination à la requête et fragments extraits avant construction de la réponse : l'implémentation ne matérialise pas une session entière pour la découper (le chargement intégral actuel du lecteur CLI est un fait de code, pas un contrat) ; un élément minimal excédant le budget donne une erreur bornée.
 - Le schéma d'implémentation documentera les unités des offsets (caractères ou octets) et l'encodage. Tests de recollement exact : pas de trou, doublon ou caractère Unicode perdu, y compris accents/emoji et coupure par budget global. La preuve brute se reconstitue sans perte d'octet.
 - Curseur opaque, inerte, validé et lié à l'outil, à la requête initiale, à sa position et à la génération. Curseur altéré/étranger : `invalid_cursor` ; génération changée : `stale_cursor`, relancer la requête initiale.
 - L'identité binaire des curseurs entre deux appels n'est pas exigée. Si l'implémentation stocke un état de curseur, sa durée de vie et ses bornes mémoire seront documentées ; un curseur perdu/expiré est refusé explicitement, jamais réinterprété comme une nouvelle requête.
