@@ -14,6 +14,12 @@ export function sourceDb (explicit) {
   return explicit || process.env.SESSION_DIG_DB || path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db')
 }
 
+// Répertoire source pi (lecture seule stricte, D3) : surcharge dédiée --pi-dir
+// / SESSION_DIG_PI_DIR — jamais de surcharge implicite croisée avec opencode.
+export function sourcePi (explicit) {
+  return explicit || process.env.SESSION_DIG_PI_DIR || path.join(os.homedir(), '.pi', 'agent', 'sessions')
+}
+
 export function corpusPaths (root = corpusRoot()) {
   return {
     root,

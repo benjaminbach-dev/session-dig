@@ -89,10 +89,16 @@ export function streamLines (file, onLine, { chunkSize = CHUNK } = {}) {
  * les octets doivent sortir EXACTEMENT comme ils sont entrés.
  */
 export function streamBytes (file, onChunk, { chunkSize = CHUNK } = {}) {
-  let fd
-  try { fd = fs.openSync(file, 'r') } catch { return 0 }
+  // `file` peut être un chemin OU un descripteur déjà ouvert (add-pi-adapter :
+  // confinement sdig raw — le fd est validé par fstat avant lecture, jamais de
+  // réouverture par chemin). L'appelant propriétaire du fd ne le ferme pas ici.
+  const ownFd = typeof file !== 'number'
+  let fd = ownFd ? null : file
   let total = 0
   try {
+    if (ownFd) {
+      try { fd = fs.openSync(file, 'r') } catch { return 0 }
+    }
     const buf = Buffer.alloc(chunkSize)
     for (;;) {
       const read = fs.readSync(fd, buf, 0, chunkSize, null)
@@ -101,7 +107,7 @@ export function streamBytes (file, onChunk, { chunkSize = CHUNK } = {}) {
       if (onChunk(buf.subarray(0, read), read) === false) break
     }
   } finally {
-    fs.closeSync(fd)
+    if (ownFd) fs.closeSync(fd)
   }
   return total
 }
@@ -127,7 +133,17 @@ function countNl (s, from, to) {
  * recouvrement conservé pour les matches incomplets et le contexte (64 caractères).
  * onMatch(contexte borné à 200 caractères, ligne absolue) : false arrête le scan.
  */
-export function scanText (file, needle, { chunkSize = CHUNK, onMatch } = {}) {
+export function scanText (file, needle, opts = {}) {
+  const ownFd = typeof file !== 'number'
+  if (!ownFd) return scanTextFd(file, needle, opts)
+  let fd
+  try { fd = fs.openSync(file, 'r') } catch { return 0 }
+  try { return scanTextFd(fd, needle, opts) } finally { fs.closeSync(fd) }
+}
+
+/** Variante par descripteur (add-pi-adapter : preuves ouvertes sous confinement
+ *  fstat — la lecture part du fd, jamais d'une réouverture par chemin). */
+export function scanTextFd (fd, needle, { chunkSize = CHUNK, onMatch } = {}) {
   needle = String(needle)
   if (!needle) return 0
   if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) throw new Error('chunkSize invalide')
@@ -135,47 +151,43 @@ export function scanText (file, needle, { chunkSize = CHUNK, onMatch } = {}) {
   const re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu')
   const buf = Buffer.alloc(chunkSize)
   const dec = new StringDecoder('utf8')
-  let fd
-  try { fd = fs.openSync(file, 'r') } catch { return 0 }
   let window = ''
   let from = 0
   let newlines = 0
   let matches = 0
-  try {
-    for (;;) {
-      const read = fs.readSync(fd, buf, 0, chunkSize, null)
-      const eof = read === 0
-      window += eof ? dec.end() : dec.write(buf.subarray(0, read))
+  for (;;) {
+    const read = fs.readSync(fd, buf, 0, chunkSize, null)
+    const eof = read === 0
+    window += eof ? dec.end() : dec.write(buf.subarray(0, read))
+    re.lastIndex = from
+    let m
+    let lineCursor = 0
+    let lineNo = newlines + 1
+    while ((m = re.exec(window)) !== null) {
+      const p = m.index
+      lineNo += countNl(window, lineCursor, p)
+      lineCursor = p
+      const ls = p === 0 ? 0 : window.lastIndexOf('\n', p - 1) + 1
+      let le = window.indexOf('\n', p + m[0].length)
+      if (le < 0) le = window.length
+      matches++
+      if (onMatch?.(window.slice(ls, le).trim().slice(0, 200), lineNo) === false) return matches
+      // Autorise les occurrences chevauchantes, sans couper une paire UTF-16.
+      from = p + (window.codePointAt(p) > 0xffff ? 2 : 1)
       re.lastIndex = from
-      let m
-      let lineCursor = 0
-      let lineNo = newlines + 1
-      while ((m = re.exec(window)) !== null) {
-        const p = m.index
-        lineNo += countNl(window, lineCursor, p)
-        lineCursor = p
-        const ls = p === 0 ? 0 : window.lastIndexOf('\n', p - 1) + 1
-        let le = window.indexOf('\n', p + m[0].length)
-        if (le < 0) le = window.length
-        matches++
-        if (onMatch?.(window.slice(ls, le).trim().slice(0, 200), lineNo) === false) return matches
-        // Autorise les occurrences chevauchantes, sans couper une paire UTF-16.
-        from = p + (window.codePointAt(p) > 0xffff ? 2 : 1)
-        re.lastIndex = from
-      }
-      if (eof) break
-      // Les débuts antérieurs à cette borne ont tous été examinés intégralement.
-      from = Math.max(from, window.length - needle.length + 1, 0)
-      if (from > 0 && /[\uDC00-\uDFFF]/.test(window[from] || '')) from--
-      let drop = Math.max(0, window.length - needle.length - 64)
-      if (drop > 0 && /[\uDC00-\uDFFF]/.test(window[drop])) drop--
-      newlines += countNl(window, 0, drop)
-      window = window.slice(drop)
-      from -= drop
     }
-  } finally {
-    fs.closeSync(fd)
+    if (eof) break
+    // Les débuts antérieurs à cette borne ont tous été examinés intégralement.
+    from = Math.max(from, window.length - needle.length + 1, 0)
+    if (from > 0 && /[\uDC00-\uDFFF]/.test(window[from] || '')) from--
+    let drop = Math.max(0, window.length - needle.length - 64)
+    if (drop > 0 && /[\uDC00-\uDFFF]/.test(window[drop])) drop--
+    newlines += countNl(window, 0, drop)
+    window = window.slice(drop)
+    from -= drop
   }
+  // PAS de closeSync ici : la variante fd n'est pas propriétaire du descripteur
+  // (l'appelant qui l'a ouvert sous confinement le referme).
   return matches
 }
 

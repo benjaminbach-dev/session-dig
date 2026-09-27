@@ -62,7 +62,7 @@ export function search (view, query) {
   const own = typeof view === 'string'
   const db = own ? new Database(view, { readonly: true, fileMustExist: true }) : view
   try {
-    const { q, repo, session, after, before, model, role, agent, limit = 20 } = query
+    const { q, repo, session, after, before, model, role, agent, source, limit = 20 } = query
     const match = ftsQuery(q, 'OR')
     // snippet col0 = text, col1 = cmd. Marqueurs ANSI par défaut (TUI), neutres si plain.
     // snipPlain = jumeau SANS décorations (bug 20/09 : la détection de coupure ne doit
@@ -71,7 +71,7 @@ export function search (view, query) {
     const close = query.plain ? '«' : '\x1b[0m'
 
     const where = ['events_fts MATCH @match']
-    const base = { repo, session, after, before, model, role, agent }
+    const base = { repo, session, after, before, model, role, agent, source }
     if (repo) { where.push('e.repo = @repo'); }
     if (session) { where.push('e.session_id LIKE @session') }
     if (after != null) { where.push('e.ts >= @after') }
@@ -79,9 +79,19 @@ export function search (view, query) {
     if (model) { where.push('e.model LIKE @model') }
     if (role) { where.push('e.role = @role') }
     if (agent) { where.push('e.agent = @agent') }
+    // add-pi-adapter (D1/D3) : filtre exact sur le champ `source` des lignes —
+    // une ligne héritée sans champ est lue comme opencode (COALESCE) ; les lignes
+    // de titre portent la source de leur session et sont filtrées comme les
+    // messages. `all`/''/absent = AUCUN prédicat (hits, ordre et scores identiques
+    // au défaut) ; toute autre valeur (source inconnue) = prédicat exact → zéro
+    // hit, pas une erreur.
+    if (source && source !== 'all') {
+      where.push("COALESCE(json_extract(e.json, '$.source'), 'opencode') = @source")
+    }
 
     const sql = `
       SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model, e.cmd, e.text,
+             COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
              snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
              snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
              snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,

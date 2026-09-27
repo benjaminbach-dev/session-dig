@@ -4,14 +4,15 @@
 // lecture unique, preuves brutes shardées et lues par blocs, empreinte, migration.
 import { ingest, migrate, fingerprint, proofWarning, recover } from '../src/corpus.js'
 import { index, search } from '../src/retriever/bm25.js'
-import { corpusPaths, sourceDb, corpusRoot } from '../src/paths.js'
-import { openView, viewPath, viewIsCurrent, inReadTx } from '../src/view.js'
+import { corpusPaths, sourceDb, sourcePi, corpusRoot } from '../src/paths.js'
+import { openView, viewPath, viewIsCurrent, inReadTx, checkFresh, sourceStatesOf, piTokenOf } from '../src/view.js'
 import { rawShardPath } from '../src/layout.js'
 import { renderTerminal, renderJson, renderStatus, renderFingerprint } from '../src/format.js'
 import { parseDateBound, streamBytes } from '../src/util.js'
 import { neighborsBySessionDb } from '../src/read.js'
-import { rawScan } from '../src/raw.js'
+import { rawScan, openProofFd } from '../src/raw.js'
 import fs from 'node:fs'
+import path from 'node:path'
 import Database from 'better-sqlite3'
 
 const USAGE = `sdig — archéologie de sessions opencode
@@ -33,7 +34,9 @@ Usage:
 
 Filtres de recherche :
   --repo R       repo exact (basename du répertoire de session)
-  --session S    id de session (préfixe accepté)
+  --session S    id de session (préfixe accepté, ex. pi:01a0…)
+  --source S     provenance exacte : all (défaut) | opencode | pi — filtre les hits
+                 (titres compris) et borne le scan --raw ; source inconnue = zéro hit
   --after DATE   à partir de (2026, 2026-06, 2026-06-01 ou ISO)
   --before DATE  jusqu'à (incluse)
   --model M      sous-chaîne (ex: deepseek, opencode/big-pickle)
@@ -51,25 +54,46 @@ Filtres de recherche :
                  affiché (jamais de masquage silencieux).
                  Hors périmètre : aucune détection des changements d'état.
   --raw          cherche aussi dans les sorties brutes (stderr inclus ; scan en flux
-                 par blocs — coût O(volume de raw/), durée affichée)
+                 par blocs — coût O(volume de raw/), durée affichée ; borné par
+                 --source ; non combiné avec --json, qui rend les hits seuls)
   --full         texte intégral des messages (lève la limite d'affichage ; read, --ctx, hits)
   --chars N      limite d'affichage par message en caractères (défaut : 400 + 4 lignes)
   --json         sortie JSON (script/tests ; texte intégral des messages dans le champ text)
   --plain        highlight sans ANSI
 
+Sources (change add-pi-adapter) :
+  --source S     sur ingest/refresh : all (défaut) ingère les sources présentes,
+                 les absentes sont signalées ; opencode|pi explicite : la source
+                 demandée absente est une erreur
+  --pi-dir P     répertoire des sessions pi (défaut ~/.pi/agent/sessions,
+                 env SESSION_DIG_PI_DIR) — lecture seule stricte ; les orphelines
+                 pi sont lisibles par \`sdig raw pi:<sessionId>:<id>\`
+
 Global :
   --home P       racine corpus (défaut ~/.local/share/session-dig, env SESSION_DIG_HOME)
-  --db P         base opencode (défaut ~/.local/share/opencode/opencode.db, env SESSION_DIG_DB)`
+  --db P         base opencode UNIQUEMENT (défaut ~/.local/share/opencode/opencode.db,
+                 env SESSION_DIG_DB) — jamais appliquée à la source pi`
 
 function fail (msg, code = 1) {
   console.error(`sdig: ${msg}`)
   process.exit(code)
 }
 
+// Bilan pi (add-pi-adapter) : fichiers suivis, orphelins (partIds), lignes
+// ignorées par TYPE/COMPTE — jamais le contenu des lignes (D6).
+function printPiSummary (pi) {
+  console.log(`  pi : ${pi.files} fichier(s) suivi(s), ${pi.orphans.length} exécution(s)/résultat(s) non rattaché(s)`)
+  const ignored = Object.entries(pi.ignored || {})
+  if (ignored.length) {
+    console.log(`    lignes ignorées : ${ignored.map(([type, n]) => `${type}=${n}`).join(', ')}`)
+  }
+  for (const partId of pi.orphans) console.log(`    orphelin : ${partId}`)
+}
+
 function parseArgs (argv) {
   const positional = []
   const flags = {}
-  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'at', 'head', 'full', 'chars', 'recover'])
+  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'at', 'head', 'full', 'chars', 'recover', 'source', 'pi-dir'])
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--help' || a === '-h') { flags.help = true; continue }
@@ -118,6 +142,11 @@ async function main () {
 
   if (flags.home) process.env.SESSION_DIG_HOME = flags.home
   if (flags.db) process.env.SESSION_DIG_DB = flags.db
+  if (flags['pi-dir']) process.env.SESSION_DIG_PI_DIR = flags['pi-dir']
+  // add-pi-adapter (D3) : la valeur de --source est validée au registre du cœur
+  // (source inconnue → erreur dédiée) ; ici on la transmet telle quelle.
+  const sourceFlag = flags.source
+  const piDirFlag = flags['pi-dir']
   const paths = corpusPaths(corpusRoot())
 
   if (isSub && sub === 'ingest') {
@@ -127,8 +156,13 @@ async function main () {
       if (!r.done) process.exit(1)
       return
     }
-    const r = await ingest({ root: paths.root, db: flags.db, rebuild: flags.rebuild })
+    const r = await ingest({ root: paths.root, db: flags.db, piDir: piDirFlag, source: sourceFlag, rebuild: flags.rebuild })
     console.log(`ingest ${r.rebuild ? '(rebuild)' : '(incrémental)'} : +${r.added} events (${r.updated} maj, ${r.unchanged} inchangés), +${r.sessionsAdded} sessions (${r.sessionsUpdated} maj) → ${r.totals.events} events / ${r.totals.sessions} sessions, ${r.rawWritten} raw écrit(s), ${r.shardsTouched} shard(s) touché(s)`)
+    // add-pi-adapter : résumé multi-source (absences, invalidations, migration, orphelins)
+    for (const n of r.notes || []) console.log(`  ${n}`)
+    if (r.pi) {
+      printPiSummary(r.pi)
+    }
     return
   }
 
@@ -152,9 +186,13 @@ async function main () {
   }
 
   if (isSub && sub === 'refresh') {
-    const r1 = await ingest({ root: paths.root, db: flags.db, rebuild: flags.rebuild })
+    const r1 = await ingest({ root: paths.root, db: flags.db, piDir: piDirFlag, source: sourceFlag, rebuild: flags.rebuild })
     const r2 = index(paths.root)
     console.log(`refresh : +${r1.added}/${r1.updated} events → corpus ${r1.totals.events}, vue/index ${r2.events}`)
+    for (const n of r1.notes || []) console.log(`  ${n}`)
+    if (r1.pi) {
+      printPiSummary(r1.pi)
+    }
     return
   }
 
@@ -164,14 +202,104 @@ async function main () {
     let rawFiles = 0
     try { rawFiles = fs.readdirSync(paths.raw, { recursive: true }).filter(f => f.endsWith('.txt')).length } catch {}
     let view = null
-    if (viewIsCurrent(paths.root)) {
-      const idb = new Database(viewPath(paths.root), { readonly: true })
+    let viewNote = null
+    const viewDbFile = viewPath(paths.root)
+    if (!fs.existsSync(viewDbFile)) {
+      viewNote = null // renderStatus : « absente (lancer sdig refresh) »
+    } else if (!viewIsCurrent(paths.root)) {
+      viewNote = 'périmée (forme ou version antérieure — lancer sdig refresh)'
+    } else {
+      // fraîcheur per-source VUE vs ÉTAT PUBLIÉ — JAMAIS contre les fichiers
+      // sources vivants : un fichier pi qui grandit entre deux refresh ne rend
+      // pas la vue indisponible (revue finale, bug B)
+      const vdb = new Database(viewDbFile, { readonly: true })
       try {
-        view = { events: idb.prepare("SELECT COUNT(*) n FROM events WHERE role != 'title'").get().n, mtime: fs.statSync(viewPath(paths.root)).mtimeMs }
-      } finally { idb.close() }
+        const fresh = checkFresh(paths.root, { db: vdb })
+        if (!fresh.fresh) {
+          const cause = String(fresh.reason || '').replace(/ — lancer `sdig refresh`$/, '')
+          viewNote = `périmée (${cause})`
+        } else {
+          view = { events: vdb.prepare("SELECT COUNT(*) n FROM events WHERE role != 'title'").get().n, mtime: fs.statSync(viewDbFile).mtimeMs }
+        }
+      } finally { vdb.close() }
     }
     const counts = st.counts || { sessions: 0, events: 0 }
-    console.log(renderStatus({ counts, rawFiles, layout: st.layoutVersion, watermark: { message: st.message ?? 0, session: st.session ?? 0 }, view }, paths))
+    // add-pi-adapter (D3) : watermarks PAR SOURCE, absences signalées sans erreur —
+    // le chemin CONFIGURÉ (flag --pi-dir / env / défaut) fait foi pour l'absence
+    // et le re-pointage, l'état publié pour le bilan des fichiers suivis.
+    // Bug A (revue finale) : normaliser la forme PLATE héritée (source/message/
+    // session au top-level) — sinon opencode était déclarée « absente » alors que
+    // ses watermarks existent dans le state plat et que la base est présente.
+    const normSources = sourceStatesOf(st)
+    const piConfigured = sourcePi()
+    const ocConfigured = sourceDb(flags.db)
+    const ocState = normSources.opencode
+    const piState = normSources.pi
+    // présence : seul ENOENT = absent ; une erreur d'accès (EACCES…) est signalée
+    // comme telle, jamais avalée en absence (revue étape 2, appliquée au status)
+    const presence = (p) => {
+      try { fs.statSync(p); return 'ok' } catch (e) {
+        return e && e.code === 'ENOENT' ? 'absent' : `illisible (${e && e.message})`
+      }
+    }
+    // opencode : epoch réel de l'état ; source jamais ingérée → absence réelle,
+    // jamais un watermark 0/0 trompeur (revue étape 3)
+    const watermark = ocState
+      ? { message: ocState.message ?? 0, session: ocState.session ?? 0 }
+      : null
+    console.log(renderStatus({ counts, rawFiles, layout: st.layoutVersion, watermark, view, viewNote, ocPath: ocConfigured, ocMissing: !ocState }, paths))
+    if (piState) {
+      console.log(`pi       : ${Object.keys(piState.files || {}).length} fichier(s) suivi(s), jeton ${String(piState.token || '').slice(0, 8)}`)
+      if (piState.path && piState.path !== piConfigured) {
+        console.log(`⚠ source pi re-pointée : ${piState.path} → ${piConfigured} — prochaine ingestion : invalidation de cette source seule`)
+      }
+    } else if (presence(piConfigured) === 'ok') {
+      console.log(`pi       : pas encore ingérée (${piConfigured})`)
+    } else if (presence(piConfigured) === 'absent') {
+      console.log(`pi       : absente — ignorée (${piConfigured})`)
+    } else {
+      console.log(`⚠ source pi illisible : ${piConfigured} — ${presence(piConfigured)}`)
+    }
+    if (!fs.existsSync(piConfigured)) {
+      console.log(`⚠ source pi configurée introuvable : ${piConfigured} — prochaine ingestion : absence signalée, état conservé`)
+    }
+    const ocPresence = ocState ? presence(ocState.path ?? ocConfigured) : presence(ocConfigured)
+    if (!ocState) {
+      if (ocPresence === 'absent') {
+        console.log(`⚠ source opencode configurée introuvable : ${ocConfigured} — prochaine ingestion : absence signalée, état conservé`)
+      } else if (ocPresence !== 'ok') {
+        console.log(`⚠ source opencode illisible : ${ocConfigured} — ${ocPresence}`)
+      }
+    } else if (ocPresence === 'absent') {
+      console.log(`⚠ base opencode disparue depuis l'ingestion : ${ocState.path} — prochaine ingestion : absence signalée, état conservé`)
+    } else if (ocPresence !== 'ok') {
+      console.log(`⚠ base opencode illisible : ${ocState.path} — ${ocPresence}`)
+    }
+    // info (pas une indisponibilité) : la source pi a évolué depuis le dernier
+    // refresh — c'est l'état normal entre deux passes (revue finale, bug B)
+    if (piState && presence(piConfigured) === 'ok') {
+      try {
+        const cur = {}
+        const walkPi = (dir, rel) => {
+          let entries
+          try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+          for (const e of entries) {
+            if (e.name.startsWith('.')) continue
+            const abs = path.join(dir, e.name)
+            const r = rel ? `${rel}/${e.name}` : e.name
+            if (e.isDirectory()) walkPi(abs, r)
+            else if (e.isFile() && e.name.endsWith('.jsonl')) {
+              const s = fs.statSync(abs)
+              cur[r] = { size: s.size, mtimeMs: s.mtimeMs }
+            }
+          }
+        }
+        walkPi(piConfigured, '')
+        if (piTokenOf(cur) !== piState.token) {
+          console.log('ℹ source pi a évolué depuis le dernier refresh — lancer sdig refresh')
+        }
+      } catch { /* diagnostic seul : jamais bloquant */ }
+    }
     const warn = proofWarning(paths.root)
     if (warn) console.log(warn)
     return
@@ -207,16 +335,42 @@ async function main () {
   if (isSub && sub === 'raw') {
     const partId = positional[0]
     if (!partId) fail('usage : sdig raw <partId> (id de part, cf. rawRef dans les résultats)')
-    const file = rawShardPath(paths.raw, partId)
-    if (!fs.existsSync(file)) fail(`sortie brute introuvable : ${file}`)
+    // add-pi-adapter (revue étape 3) : validation du partId AVANT dérivation de
+    // chemin — familles connues uniquement (opencode hérité : un segment sans
+    // ':' ; pi : pi:<sessionId>:<id local>, '|' licite dans l'id local), refus
+    // des séparateurs de chemin, de la traversée '..', des ids vides, à blancs
+    // en bord ou porteurs de caractères de contrôle.
+    const ctl = /[\x00-\x1f\x7f]/
+    const seg = (s) => typeof s === 'string' && s !== '' && s.trim() === s &&
+      !ctl.test(s) && !s.includes('..') && !s.includes('/') && !s.includes('\\')
+    if (partId.startsWith('pi:')) {
+      const rest = partId.slice(3)
+      const sep = rest.indexOf(':')
+      if (sep < 0 || !seg(rest.slice(0, sep)) || !seg(rest.slice(sep + 1)) || rest.slice(sep + 1).includes(':')) {
+        fail(`partId pi invalide : ${JSON.stringify(partId)} — forme attendue pi:<sessionId>:<id local>`)
+      }
+    } else if (!seg(partId) || partId.includes(':')) {
+      // ':' est réservé à la famille pi ; l'hérité opencode n'en porte pas
+      fail(`partId invalide : ${JSON.stringify(partId)}`)
+    }
+    // ouverture CONFINÉE (revue finale) : composantes sous raw/ vérifiées par
+    // lstat (pas de lien symbolique), fichier ouvert puis validé par fstat — la
+    // lecture part du fd ouvert, jamais d'une réouverture par chemin
+    const opened = openProofFd(paths.raw, partId)
+    if (opened.error) {
+      fail(`preuve brute refusée (${opened.error}) : ${JSON.stringify(partId)}`)
+    }
+    const file = opened.file
     const warn = proofWarning(paths.root)
     if (warn) console.log(warn)
-    // lecture par blocs bornés : l'empreinte mémoire ne dépend pas de la taille du fichier
+    // lecture par blocs bornés depuis le fd CONFINÉ (jamais de réouverture par
+    // chemin) : l'empreinte mémoire ne dépend pas de la taille du fichier
     const t0 = performance.now()
-    const bytes = streamBytes(file, (blk) => {
+    const bytes = streamBytes(opened.fd, (blk) => {
       let offset = 0
       while (offset < blk.length) offset += fs.writeSync(1, blk, offset, blk.length - offset)
     })
+    fs.closeSync(opened.fd)
     if (process.env.SDIG_RAW_TIMING) process.stderr.write(`  (${(performance.now() - t0).toFixed(0)} ms, ${bytes} o)\n`)
     return
   }
@@ -242,6 +396,7 @@ async function main () {
       const hits = search(db, {
         q, repo: flags.repo, session: flags.session, after, before,
         model: flags.model, role: flags.role, agent: flags.agent,
+        source: sourceFlag,
         limit, plain: flags.plain || flags.json
       })
       if (flags.json) { console.log(renderJson(hits)); return { hits, done: true } }
@@ -277,7 +432,7 @@ async function main () {
       // vue) — coût O(raw/) documenté, durée affichée.
       const { renderRawHits } = await import('../src/format.js')
       const t0 = performance.now()
-      const matches = rawScan(paths.root, q, { limit: 10 })
+      const matches = rawScan(paths.root, q, { limit: 10, source: sourceFlag })
       const dt = performance.now() - t0
       if (matches.length) {
         console.log(renderRawHits(matches))

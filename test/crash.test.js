@@ -3,6 +3,12 @@
 // lectures = dernier état publié, marqueur = détecteur, archive refusée, réconciliation
 // par relance (convergence), temporaires ramassés.
 import { test, before, after } from 'node:test'
+
+// add-pi-adapter : restauration de l'environnement hermétique (indépendance du runner)
+after(() => {
+  if (__prevPiDir === undefined) delete process.env.SESSION_DIG_PI_DIR
+  else process.env.SESSION_DIG_PI_DIR = __prevPiDir
+})
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -10,10 +16,16 @@ import os from 'node:os'
 import { buildFixtureDb } from './helpers/fixture.js'
 import { ingest, fingerprint, ingestRunning, recover, proofWarning, loadCorpus } from '../src/corpus.js'
 import { listShards, shardPath } from '../src/layout.js'
-import { viewIsCurrent, openView, viewPath } from '../src/view.js'
+import { viewIsCurrent, openView, viewPath, ocTokenOf } from '../src/view.js'
 import { readJsonl } from '../src/util.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-crash-'))
+// id de session pi synthétique (forme uuid v7, fixtures uniquement)
+const fakeId = () => 'aaaaaaaa-0000-7000-8000-' + String(Date.now() % 100000000000).padStart(12, '0')
+// add-pi-adapter : source pi hermétique (jamais le ~/.pi réel dans les tests)
+const __prevPiDir = process.env.SESSION_DIG_PI_DIR
+process.env.SESSION_DIG_PI_DIR = path.join(tmp, 'pi-absente')
+
 const dbPath = path.join(tmp, 'fixture.db')
 const root = path.join(tmp, 'corpus')
 
@@ -36,23 +48,37 @@ test('setup : ingestion initiale propre', async () => {
 // ── crash avant staging (dans le delta) : rien publié, marqueur posé ──
 
 test('crash pendant le delta : vue intacte (dernier état publié), marqueur = seul témoin, archive refusée, relance converge', async () => {
-  // simulateur : la source disparaît au milieu de la passe → exception avant tout rename
-  // (ingest échoue : ROLLBACK de la vue, shards non touchés, marqueur reste posé)
+  // Contrat précisé par add-pi-adapter (revue étape 2) : une erreur de
+  // SÉLECTION/PRÉSENCE (validation du registre) survient AVANT la pose du
+  // marqueur — le corpus n'est pas « en ingestion ».
   await assert.rejects(
     () => ingest({ root, db: path.join(tmp, 'gone.db') }),
     /introuvable/
   )
+  assert.equal(ingestRunning(root), false, 'échec de sélection : pas de marqueur')
+  assert.equal(proofWarning(root), null, 'aucun avertissement sans passe entamée')
+  // En revanche, un échec EN COURS DE PASSE (delta entamé, avant tout rename)
+  // laisse le marqueur : simulateur = un fichier pi au JSON invalide, détecté
+  // pendant le décodage, après le début de la passe.
+  fs.mkdirSync(process.env.SESSION_DIG_PI_DIR, { recursive: true })
+  fs.writeFileSync(path.join(process.env.SESSION_DIG_PI_DIR, 'ses_cassée.jsonl'),
+    JSON.stringify({ type: 'session', version: 3, id: fakeId(), timestamp: '2027-01-15T08:00:00.000Z', cwd: '/root/x' }) + '\n' +
+    '{ligne pi invalide\n')
+  await assert.rejects(
+    () => ingest({ root, db: dbPath }),
+    /JSON invalide/
+  )
   // lectures : dernier état publié, cohérent
   const evs = publishedEvents()
   assert.equal(evs.length, 5)
-  // l'ingestion elle-même a retiré son marqueur ? Non : un crash la laisse.
-  // Ici l'erreur est avant même le premier rename : le marqueur reste posé.
   assert.equal(ingestRunning(root), true, 'le marqueur détecte l\'état non réconcilié')
   // archive refusée
   assert.throws(() => fingerprint(root), /marqueur/)
   // avertissement preuves signalé
   assert.match(proofWarning(root), /ingestion en cours/)
-  // réconciliation par relance : converge, retire le marqueur, ramasse les temporaires
+  // réconciliation par relance : converge (fichier pi corrigé retiré — un fichier
+  // invalide est un échec répété tant qu'il est en source), marqueur retiré
+  fs.rmSync(process.env.SESSION_DIG_PI_DIR, { recursive: true, force: true })
   const r = await ingest({ root, db: dbPath })
   assert.equal(ingestRunning(root), false)
   assert.equal(r.added, 0)
@@ -91,12 +117,17 @@ test('crash après COMMIT, avant state.json : vue en avance = état publié vali
   // état : la vue a un watermark récent, state.json en retard
   const Database = (await import('better-sqlite3')).default
   const vdb = new Database(viewPath(root))
-  const wm = vdb.prepare('SELECT message, session FROM watermark').get()
+  // add-pi-adapter : watermark PAR SOURCE (source, token, message, session)
+  const wm = vdb.prepare("SELECT message, session FROM watermark WHERE source = 'opencode'").get()
   vdb.close()
-  // simuler un state.json en retard (crash entre COMMIT et state.json)
+  // simuler un state.json en retard (crash entre COMMIT et state.json) :
+  // on rembobine l'état opencode AVANT le watermark de la vue
   const stPath = path.join(root, 'state.json')
   const st = JSON.parse(fs.readFileSync(stPath, 'utf8'))
-  fs.writeFileSync(stPath, JSON.stringify({ ...st, message: wm.message - 1000, session: wm.session - 1000 }))
+  st.sources.opencode.message = wm.message - 1000
+  st.sources.opencode.session = wm.session - 1000
+  st.sources.opencode.token = ocTokenOf(st.sources.opencode.message, st.sources.opencode.session)
+  fs.writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n')
   // la vue est EN AVANCE sur state.json : la fraîcheur ne refuse pas
   // (état publié valide) ; les lectures fonctionnent
   const evs = publishedEvents()
@@ -106,7 +137,7 @@ test('crash après COMMIT, avant state.json : vue en avance = état publié vali
   assert.equal(r.added, 0, 'ré-application sans doublon')
   assert.equal(publishedEvents().length, 5)
   const st2 = JSON.parse(fs.readFileSync(stPath, 'utf8'))
-  assert.equal(st2.message, wm.message, 'state.json rattrapé')
+  assert.equal(st2.sources.opencode.message, wm.message, 'state.json rattrapé (sources.opencode)')
 })
 
 // ── snapshot de lecture unique pendant une publication concurrente ──

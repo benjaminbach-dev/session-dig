@@ -11,6 +11,7 @@
 // de lecture (total, visible, maskedCount) excluent ces lignes (role != 'title').
 // L'ordre de lecture d'une session est (ts, id) — celui du shard.
 import Database from 'better-sqlite3'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { corpusPaths } from './paths.js'
@@ -42,7 +43,12 @@ export const SCHEMA = `
     rawRef TEXT PRIMARY KEY,
     eventId TEXT, sessionId TEXT, ts INTEGER, role TEXT, tool TEXT, cmd TEXT
   );
-  CREATE TABLE watermark(message INTEGER, session INTEGER);
+  CREATE TABLE watermark(
+    source TEXT PRIMARY KEY,
+    token TEXT NOT NULL,
+    message INTEGER,
+    session INTEGER
+  );
 `
 
 export function viewPath (root = corpusPaths().root) {
@@ -57,6 +63,60 @@ export function openViewWrite (root = corpusPaths().root, dbFile = viewPath(root
   const db = new Database(dbFile)
   db.pragma('journal_mode = WAL')
   return db
+}
+
+// ── Jetons de fraîcheur par source (design D2) : condensat déterministe de
+// l'état incrémental de la source. opencode : md5(message\0session) ; pi :
+// md5 de l'ensemble TRIÉ des entrées files (relPath\0size\0mtimeMs). Un jeton
+// n'a pas d'ordre — l'égalité vue/state est la fraîcheur.
+export function ocTokenOf (message, session) {
+  return crypto.createHash('md5').update(`${message}\0${session}`).digest('hex')
+}
+export function piTokenOf (files = {}) {
+  const h = crypto.createHash('md5')
+  for (const rel of Object.keys(files).sort()) {
+    const f = files[rel] || {}
+    h.update(`${rel}\0${f.size ?? -1}\0${f.mtimeMs ?? -1}\n`)
+  }
+  return h.digest('hex')
+}
+
+/**
+ * Normalise un state.json en forme multi-source (design D2). Une forme PLATE
+ * héritée (top-level message/session — le champ `source` le confirme) est
+ * interprétée comme sources.opencode, sans re-ingestion forcée : les watermarks
+ * opencode sont conservés tels quels ; la forme multi-source est écrite au
+ * COMMIT de la première ingestion qui suit. Les jetons manquants sont calculés.
+ */
+export function sourceStatesOf (rawState) {
+  const st = rawState && typeof rawState === 'object' ? rawState : {}
+  const out = {}
+  if (st.sources && typeof st.sources === 'object') {
+    for (const [name, s] of Object.entries(st.sources)) {
+      if (!s || typeof s !== 'object') continue
+      if (name === 'opencode') {
+        const message = Number.isFinite(s.message) ? s.message : -1
+        const session = Number.isFinite(s.session) ? s.session : -1
+        out.opencode = { ...s, message, session, token: s.token ?? ocTokenOf(message, session) }
+      } else if (name === 'pi') {
+        const files = (s.files && typeof s.files === 'object') ? s.files : {}
+        out.pi = { ...s, files, token: s.token ?? piTokenOf(files) }
+      }
+    }
+    return out
+  }
+  if (st.message != null || st.session != null) {
+    const message = Number.isFinite(st.message) ? st.message : -1
+    const session = Number.isFinite(st.session) ? st.session : -1
+    return { opencode: { path: st.source, message, session, token: ocTokenOf(message, session) } }
+  }
+  return {}
+}
+
+/** La table watermark de la vue porte-t-elle la forme par source ? */
+function watermarkHasSourceColumn (db) {
+  const cols = db.prepare('PRAGMA table_info(watermark)').all().map(c => c.name)
+  return cols.includes('source') && cols.includes('token')
 }
 
 /** La vue existe-t-elle avec le schéma v2 complet ? */
@@ -77,7 +137,10 @@ export function viewIsCurrent (root = corpusPaths().root) {
     if (!viewHasSchema(db)) return false
     const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('layoutVersion')
     if (!row || Number(row.value) !== 2) return false
-    return !!db.prepare('SELECT message, session FROM watermark').get()
+    // add-pi-adapter : watermark par source (jeton) — une vue de forme antérieure
+    // (watermark mono-ligne) n'est pas courante : jetable, elle est reconstruite.
+    if (!watermarkHasSourceColumn(db)) return false
+    return db.prepare('SELECT COUNT(*) n FROM watermark').get().n > 0
   } catch {
     return false
   } finally {
@@ -105,8 +168,12 @@ export function openView (root = corpusPaths().root, dbFile = viewPath(root)) {
     db.close()
     throw new Error(`vue de layout non support : lu v${got}, attendu v2 — reconstruire avec \`sdig refresh\``)
   }
-  const wm = db.prepare('SELECT message, session FROM watermark').get()
-  if (!wm) {
+  if (!watermarkHasSourceColumn(db)) {
+    db.close()
+    throw new Error('vue de forme antérieure (watermark mono-source) — reconstruire avec `sdig refresh`')
+  }
+  const wm = db.prepare('SELECT COUNT(*) n FROM watermark').get()
+  if (!wm || wm.n === 0) {
     db.close()
     throw new Error('vue sans watermark — reconstruire avec `sdig refresh`')
   }
@@ -129,20 +196,34 @@ export function checkFresh (root = corpusPaths().root, { db = null } = {}) {
   const own = db == null
   const v = db ?? openView(root)
   try {
-    const wm = v.prepare('SELECT message, session FROM watermark').get()
-    if (!wm) return { fresh: false, reason: 'vue sans watermark — reconstruire avec `sdig refresh`' }
+    if (!watermarkHasSourceColumn(v)) {
+      return { fresh: false, reason: 'vue de forme antérieure (watermark mono-source) — reconstruire avec `sdig refresh`' }
+    }
+    const rows = new Map(v.prepare('SELECT source, token, message, session FROM watermark').all().map(r => [r.source, r]))
+    if (!rows.size) return { fresh: false, reason: 'vue sans watermark — reconstruire avec `sdig refresh`' }
     const stPath = corpusPaths(root).state
     let st = {}
     try { st = JSON.parse(fs.readFileSync(stPath, 'utf8')) } catch {
       return { fresh: false, reason: 'corpus sans state.json lisible — relancer une ingestion' }
     }
-    if ((st.message ?? -1) > wm.message || (st.session ?? -1) > wm.session) {
-      return {
-        fresh: false,
-        reason: `vue en retard sur le corpus (vue message=${wm.message}/session=${wm.session}, corpus message=${st.message}/session=${st.session}) — lancer \`sdig refresh\``
+    // Fraîcheur PER-SOURCE (design D2) : une vue en retard sur UNE source est en
+    // retard, point. Un jeton n'a pas d'ordre — pour pi, l'égalité fait foi ;
+    // opencode conserve ses epochs ORDONNABLES : vue en avance (crash entre COMMIT
+    // et state.json) = état publié valide, tolérée ; vue en retard = refusée.
+    for (const [name, s] of Object.entries(sourceStatesOf(st))) {
+      const row = rows.get(name)
+      if (!row) {
+        return { fresh: false, reason: `vue sans jeton de fraîcheur pour la source ${name} — lancer \`sdig refresh\`` }
+      }
+      if (name === 'opencode') {
+        if ((s.message ?? -1) > (row.message ?? -1) || (s.session ?? -1) > (row.session ?? -1)) {
+          return { fresh: false, reason: `vue en retard sur la source opencode (vue message=${row.message}/session=${row.session}, corpus message=${s.message}/session=${s.session}) — lancer \`sdig refresh\`` }
+        }
+      } else if (row.token !== s.token) {
+        return { fresh: false, reason: `vue en retard sur la source ${name} (jeton divergent) — lancer \`sdig refresh\`` }
       }
     }
-    return { fresh: true, watermark: wm }
+    return { fresh: true, watermark: Object.fromEntries(rows) }
   } finally {
     if (own) v.close()
   }
@@ -192,11 +273,27 @@ export function viewUsableForIngest (root = corpusPaths().root) {
   let db
   try { db = new Database(viewPath(root), { readonly: true, fileMustExist: true }) } catch { return false }
   try {
-    const wm = db.prepare('SELECT message, session FROM watermark').get()
-    if (!wm) return false
+    if (!watermarkHasSourceColumn(db)) return false
+    const rows = new Map(db.prepare('SELECT source, token, message, session FROM watermark').all().map(r => [r.source, r]))
+    if (!rows.size) return false
     let st = {}
     try { st = JSON.parse(fs.readFileSync(corpusPaths(root).state, 'utf8')) } catch { return true }
-    return (st.message ?? -1) <= wm.message && (st.session ?? -1) <= wm.session
+    // Per-source : une source de l'état sans ligne dans la vue rend la vue
+    // inutilisable comme base (reconstruction depuis le corpus). opencode : les
+    // epochs sont ordonnables — vue EN AVANCE (crash entre COMMIT et state.json)
+    // tolérée, état publié valide. pi : jeton sans ordre — l'égalité est exigée ;
+    // la divergence (vue en avance comme en retard) déclenche une reconstruction
+    // depuis les shards, qui est elle-même idempotente (design D2, jetons compris).
+    for (const [name, s] of Object.entries(sourceStatesOf(st))) {
+      const row = rows.get(name)
+      if (!row) return false
+      if (name === 'opencode') {
+        if ((s.message ?? -1) > (row.message ?? -1) || (s.session ?? -1) > (row.session ?? -1)) return false
+      } else if (row.token !== s.token) {
+        return false
+      }
+    }
+    return true
   } catch {
     return false
   } finally {
@@ -233,12 +330,15 @@ export function populateView (db, root = corpusPaths().root) {
     streamLines(paths.sessions, (line) => {
       const s = JSON.parse(line)
       insSes.run(s.id, line, s.title ?? null, s.repo ?? null, s.tsCreated ?? null, s.tsUpdated ?? null, s.directory ?? null, s.cost ?? null, s.parentSession ?? null)
-      // ligne de titre synthétique (décision 17/09) : role 'title', jamais comptée
+      // ligne de titre synthétique (décision 17/09) : role 'title', jamais comptée.
+      // add-pi-adapter (D1) : elle porte la source de sa session — les sessions
+      // héritées du corpus, sans champ, sont lues comme opencode.
       if (s.title) {
+        const source = s.source ?? 'opencode'
         insertEvent({
           id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title',
           repo: s.repo ?? null, text: s.title
-        }, JSON.stringify({ schemaVersion: 1, id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title', text: s.title, repo: s.repo ?? null }))
+        }, JSON.stringify({ schemaVersion: 1, source, id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title', text: s.title, repo: s.repo ?? null }))
       }
     })
     const shards = listShards(root)
@@ -287,7 +387,10 @@ export function buildView (root = corpusPaths().root, { dbFile = viewPath(root),
 
     db.transaction(() => {
       db.prepare('INSERT INTO meta (key, value) VALUES (?,?)').run('layoutVersion', '2')
-      db.prepare('INSERT INTO watermark (message, session) VALUES (?,?)').run(state.message ?? -1, state.session ?? -1)
+      for (const [name, s] of Object.entries(sourceStatesOf(state))) {
+        db.prepare('INSERT INTO watermark (source, token, message, session) VALUES (?,?,?,?)')
+          .run(name, s.token, s.message ?? null, s.session ?? null)
+      }
     })()
     db.pragma('wal_checkpoint(TRUNCATE)')
     return { events: count, dbFile }

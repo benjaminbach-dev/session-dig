@@ -12,7 +12,15 @@ import { streamLines } from '../src/util.js'
 
 async function fixture(t) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-repair-'))
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }))
+  // add-pi-adapter : source pi hermétique (jamais le ~/.pi réel dans les tests),
+  // environnement sauvegardé/restauré (indépendance du mode d'exécution)
+  const __prevPiDir = process.env.SESSION_DIG_PI_DIR
+  process.env.SESSION_DIG_PI_DIR = path.join(tmp, 'pi-absente')
+  t.after(() => {
+    if (__prevPiDir === undefined) delete process.env.SESSION_DIG_PI_DIR
+    else process.env.SESSION_DIG_PI_DIR = __prevPiDir
+    fs.rmSync(tmp, { recursive: true, force: true })
+  })
   const root = path.join(tmp, 'corpus'), source = path.join(tmp, 'source.db')
   buildFixtureDb(source)
   await ingest({ root, db: source })

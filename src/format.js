@@ -71,6 +71,14 @@ function truncMarker ({ shownLen, total, sessionId, msgId, plain = false }) {
 }
 
 /** Rendu d'un événement du corpus (voisin de hit ou lecture de session). */
+// add-pi-adapter (revue étape 3) : les commandes suggérées à l'écran doivent être
+// copiables telles quelles — un partId pi peut contenir '|' (761 ids réels) ou
+// une quote. Quote simple systématique dès qu'un caractère hors du jeu sûr
+// (alphanumériques, - _ . : / @) est présent, quotes internes échappées.
+export function shellQuoteArg (arg) {
+  return /^[A-Za-z0-9._:@/-]+$/.test(arg) ? arg : `'${String(arg).replaceAll("'", `'\\''`)}'`
+}
+
 export function renderEvent (e, { mark = '  ', hit = null, plain = false, full = false, chars = null } = {}) {
   const dim = plain ? '' : '\x1b[2m'
   const reset = plain ? '' : '\x1b[0m'
@@ -92,7 +100,7 @@ export function renderEvent (e, { mark = '  ', hit = null, plain = false, full =
   }
   for (const c of e.toolCalls || []) {
     const ec = c.exitCode !== undefined ? ` (exit ${c.exitCode})` : ''
-    const raw = c.rawRef ? ` → sdig raw ${c.rawRef}` : ''
+    const raw = c.rawRef ? ` → sdig raw ${shellQuoteArg(c.rawRef)}` : ''
     L.push(`    ${dim}· ${c.tool}: ${trunc(c.cmd || '', 120)}${ec}${raw}${reset}`)
   }
   return L.join('\n')
@@ -111,9 +119,14 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
 
   for (const g of groups) {
     const ses = sessionsById.get(g.sessionId)
+    // add-pi-adapter : provenance visible — marqueur sobre sur les sessions pi
+    // (l'espace opencode, hérité et majoritaire, reste non marqué) ; la source
+    // vient des métadonnées de session, repli sur le hit.
+    const source = ses?.source ?? g.hits.find(h => h.source)?.source
+    const tag = source === 'pi' ? ' · pi' : ''
     const head = ses
-      ? `── ${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}`
-      : `── session ${g.sessionId}`
+      ? `── ${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}${tag}`
+      : `── session ${g.sessionId}${tag}`
     lines.push(`\x1b[1m${head}\x1b[0m  \x1b[2m${g.sessionId}\x1b[0m`)
 
     const win = ctx > 0 && ctxBySession ? ctxBySession.get(g.sessionId) : null
@@ -259,7 +272,7 @@ export function renderRawHits (matches) {
     L.push(`  \x1b[2m${fmtTs(m.ts)} ${m.tool || ''} → ${m.sessionId}\x1b[0m`)
     if (m.cmd) L.push(`    \x1b[2m$ ${trunc(m.cmd, 120)}\x1b[0m`)
     L.push(`    ${m.line}`)
-    L.push(`    \x1b[2m→ preuve : sdig raw ${m.rawRef} (ligne ${m.lineNo}) · contexte : sdig read ${m.sessionId}\x1b[0m`)
+    L.push(`    \x1b[2m→ preuve : sdig raw ${shellQuoteArg(m.rawRef)} (ligne ${m.lineNo}) · contexte : sdig read ${m.sessionId}\x1b[0m`)
   }
   return L.join('\n')
 }
@@ -271,6 +284,7 @@ export function renderJson (hits) {
     ts: h.ts,
     date: fmtTs(h.ts),
     role: h.role,
+    source: h.source ?? 'opencode', // add-pi-adapter : provenance par hit (D1)
     agent: h.agent,
     repo: h.repo,
     model: h.model,
@@ -289,8 +303,14 @@ export function renderStatus (st, paths) {
   L.push(`sessions : ${st.counts.sessions}`)
   L.push(`events   : ${st.counts.events}`)
   L.push(`raw      : ${st.rawFiles} fichier(s)`)
-  L.push(`watermark: message=${st.watermark.message} session=${st.watermark.session} (${fmtTs(st.watermark.message)})`)
-  L.push(`vue      : ${st.view ? `${st.view.events} event(s) en vue, MAJ ${fmtTs(st.view.mtime)}` : 'absente (lancer sdig refresh)'}`)
+  if (st.watermark) {
+    L.push(`watermark: message=${st.watermark.message} session=${st.watermark.session} (${fmtTs(st.watermark.message)})`)
+  } else {
+    // corpus sans opencode ingérée (pi-only) : absence réelle, jamais un 0/0 trompeur
+    L.push(`opencode : absente — ignorée (${st.ocPath ?? 'chemin par défaut'})`)
+  }
+  // trois états distincts (revue finale, bug B) : absente / périmée (cause nommée) / disponible
+  L.push(`vue      : ${st.view ? `${st.view.events} event(s) en vue, MAJ ${fmtTs(st.view.mtime)}` : (st.viewNote ?? 'absente (lancer sdig refresh)')}`)
   return L.join('\n')
 }
 

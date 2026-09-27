@@ -1,5 +1,11 @@
 // Lot 1 : raccordements CLI uniquement, corpus synthétique temporaire.
 import { test, before, after } from 'node:test'
+
+// add-pi-adapter : restauration de l'environnement hermétique (indépendance du runner)
+after(() => {
+  if (__prevPiDir === undefined) delete process.env.SESSION_DIG_PI_DIR
+  else process.env.SESSION_DIG_PI_DIR = __prevPiDir
+})
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -11,6 +17,10 @@ import { ingest } from '../src/corpus.js'
 import { rawShardPath } from '../src/layout.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-cli-wiring-'))
+// add-pi-adapter : source pi hermétique (jamais le ~/.pi réel dans les tests)
+const __prevPiDir = process.env.SESSION_DIG_PI_DIR
+process.env.SESSION_DIG_PI_DIR = path.join(tmp, 'pi-absente')
+
 const root = path.join(tmp, 'corpus')
 const source = path.join(tmp, 'source.db')
 const cli = fileURLToPath(new URL('../bin/sdig.js', import.meta.url))

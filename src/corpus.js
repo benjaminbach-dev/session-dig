@@ -17,10 +17,11 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import Database from 'better-sqlite3'
 import { adaptPaged } from './adapter/opencode-page.js'
+import { adaptPi } from './adapter/pi.js'
 import { atomicWrite, streamLines, ensureDir, md5File } from './util.js'
-import { corpusPaths, sourceDb } from './paths.js'
+import { corpusPaths, sourceDb, sourcePi } from './paths.js'
 import { shardPath, rawShardPath, assertLayout, LAYOUT_VERSION, markerPath, ingestRunning } from './layout.js'
-import { viewPath, openViewWrite, buildView, eventCols, viewUsableForIngest, populateView, SCHEMA } from './view.js'
+import { viewPath, openViewWrite, buildView, eventCols, viewUsableForIngest, populateView, SCHEMA, sourceStatesOf, ocTokenOf, piTokenOf } from './view.js'
 
 export { markerPath, ingestRunning }
 
@@ -108,9 +109,11 @@ export function recover (root = corpusPaths().root) {
     const { events } = buildView(root, { duringRecovery: true })
     atomicWrite(paths.state, JSON.stringify({ ...st, counts: { events, sessions: countSessionsFile(paths.sessions) } }, null, 2) + '\n')
     fs.rmSync(paths.marker, { force: true })
+    // watermark opencode affiché depuis la forme multi-source (repli : forme plate)
+    const oc = sourceStatesOf(st).opencode
     return {
       done: true,
-      note: `reprise explicite : vue reconstruite depuis le corpus tel qu'il est (${events} événements), watermark conservé (message=${st.message}, session=${st.session}) — la prochaine ingestion depuis la source convergera`
+      note: `reprise explicite : vue reconstruite depuis le corpus tel qu'il est (${events} événements), watermark conservé (message=${oc?.message ?? '?'}, session=${oc?.session ?? '?'}) — la prochaine ingestion depuis la source convergera`
     }
   } finally {
     lock.release()
@@ -154,6 +157,7 @@ function countSessionsFile (sessionsFile) {
 export async function ingest (opts = {}) {
   const root = opts.root ?? corpusPaths().root
   const dbPath = sourceDb(opts.db)
+  const piPath = sourcePi(opts.piDir)
   const paths = corpusPaths(root)
   ensureDir(root)
   ensureDir(paths.raw)
@@ -163,31 +167,102 @@ export async function ingest (opts = {}) {
     throw new Error('une ingestion est déjà en cours sur ce corpus (verrou consultatif) — réessayer une fois la première terminée')
   }
   try {
-    return await _ingest(root, paths, dbPath, opts)
+    return await _ingest(root, paths, dbPath, piPath, opts)
   } finally {
     lock.release()
   }
 }
 
-async function _ingest (root, paths, dbPath, opts) {
+async function _ingest (root, paths, dbPath, piPath, opts) {
   const rebuild = !!opts.rebuild
-  const prev = rebuild ? {} : readState(paths.state)
+  const prevRaw = rebuild ? {} : readState(paths.state)
+  // Forme multi-source normalisée : un state.json PLAT hérité (top-level
+  // message/session) est interprété comme sources.opencode — migration écrite au
+  // COMMIT de CETTE passe (design D2), sans re-ingestion forcée de l'opencode.
+  const prevSources = sourceStatesOf(prevRaw)
+  const prevOc = prevSources.opencode
+  const prevPi = prevSources.pi
+  const flatState = !rebuild && prevRaw.sources == null && (prevRaw.message != null || prevRaw.session != null)
+  const prev = prevRaw
   // Un corpus v1 passe par la migration : refus explicite avec la marche à suivre.
   if (!rebuild && prev.layoutVersion != null) assertLayout(prev)
   if (!rebuild && prev.layoutVersion == null && fs.existsSync(paths.events) && !fs.existsSync(paths.eventsDir)) {
     throw new Error('corpus v1 détecté (events.jsonl sans events/) — lancer `sdig migrate` (sans la source) ou `sdig ingest --rebuild` (depuis la source)')
   }
 
+  // ── Registre de sources (design D3 — sélection `all`, défaut ; la sélection
+  // explicite --source est accueillie ici, ses options CLI arrivant à l'étape 3).
+  // Validation AVANT la pose du marqueur (revue étape 2) : une erreur de
+  // sélection, de présence ou d'accès n'est pas un échec de publication — le
+  // corpus ne doit pas rester artificiellement « en ingestion » ; le marqueur
+  // n'est conservé que pour un échec APRÈS début de publication.
+  const requested = opts.source ?? 'all'
+  if (requested !== 'all' && requested !== 'opencode' && requested !== 'pi') {
+    throw new Error(`source inconnue : ${JSON.stringify(String(requested))} (all|opencode|pi)`)
+  }
+  const wants = (name) => requested === 'all' || requested === name
+  const notes = []
+  const active = new Set()
+  // Erreurs d'accès ≠ absence : seul ENOENT signifie « absent » ; EACCES…
+  // fait échouer la passe avec le chemin (jamais de publication à source muette).
+  const ocExists = (() => {
+    try { return fs.statSync(dbPath).isFile() } catch (e) {
+      if (e && e.code === 'ENOENT') return false
+      throw new Error(`source opencode illisible (${dbPath}) : ${e && e.message}`)
+    }
+  })()
+  const piExists = (() => {
+    try { return fs.statSync(piPath).isDirectory() } catch (e) {
+      if (e && e.code === 'ENOENT') return false
+      throw new Error(`source pi illisible (${piPath}) : ${e && e.message}`)
+    }
+  })()
+  if (wants('opencode')) {
+    if (ocExists) active.add('opencode')
+    else if (requested === 'opencode') throw new Error(`source opencode introuvable : ${dbPath}`)
+    else if (opts.db != null) throw new Error(`base source introuvable : ${dbPath}`)
+    else notes.push(`source opencode absente : ${dbPath} — ignorée`)
+  }
+  if (wants('pi')) {
+    if (piExists) active.add('pi')
+    else if (requested === 'pi') throw new Error(`source pi introuvable : ${piPath}`)
+    else if (opts.piDir != null) throw new Error(`répertoire source pi introuvable : ${piPath}`)
+    else notes.push(`source pi absente : ${piPath} — ignorée`)
+  }
+  if (!active.size) {
+    throw new Error(`aucune source présente : opencode (${dbPath}) introuvable, pi (${piPath}) introuvable — rien à ingérer`)
+  }
+
+  // ── Changement de chemin d'une source : invalidation de CETTE source seule
+  // (relecture intégrale, signalée), l'autre conserve son watermark (design D2).
+  // Chemin absent de l'état hérité (forme plate sans `source`) : on ne peut pas
+  // conclure au re-pointage — watermark conservé, le delta jugera.
+  let ocInvalidated = false
+  let piInvalidated = false
+  if (active.has('opencode') && prevOc && prevOc.path && prevOc.path !== dbPath) {
+    ocInvalidated = true
+    notes.push(`chemin de la source opencode changé (${prevOc.path} → ${dbPath}) — relecture intégrale de cette source`)
+  }
+  if (active.has('pi') && prevPi && prevPi.path && prevPi.path !== piPath) {
+    piInvalidated = true
+    notes.push(`chemin de la source pi changé (${prevPi.path} → ${piPath}) — relecture intégrale de cette source`)
+  }
+  if (flatState) notes.push('state.json de forme plate migré vers la forme multi-source (watermark opencode conservé)')
+
   // ── 0. marqueur AVANT tout remplacement ── ; ramassage des temporaires orphelins
   // UNIQUEMENT en réconciliation (passe corrective 20/09, revue : le ramassage
   // inconditionnel parcourait toute l'arborescence du corpus — O(#fichiers) — à
   // CHAQUE passe ; les temporaires n'existent que pendant une passe interrompue,
-  // détectée par le marqueur).
+  // détectée par le marqueur). Posé APRÈS la validation du registre (revue étape 2 :
+  // une erreur de sélection/présence n'est pas un échec de publication) mais AVANT
+  // toute lecture/publication — un échec EN COURS DE PASSE le laisse posé, contrat
+  // crash/réconciliation inchangé.
   const reconciling = ingestRunning(root)
   if (!reconciling) {
     fs.writeFileSync(paths.marker, JSON.stringify({ startedAt: new Date().toISOString(), pid: process.pid }) + '\n')
   }
   const swept = reconciling ? sweepTemporaries(root) : 0
+
 
   if (rebuild) {
     // Rebuild = repartir de zéro : corpus, raw et vue purgés puis régénérés.
@@ -196,10 +271,14 @@ async function _ingest (root, paths, dbPath, opts) {
     fs.rmSync(paths.sessions, { force: true })
     ensureDir(paths.raw)
   }
+  // Watermark opencode de reprise : depuis l'état normalisé — conservé tel quel
+  // en migration de forme plate ; -1 sur rebuild ou invalidation de chemin.
   const since = {
-    message: rebuild ? -1 : (typeof prev.message === 'number' ? prev.message : -1),
-    session: rebuild ? -1 : (typeof prev.session === 'number' ? prev.session : -1)
+    message: (active.has('opencode') && !rebuild && !ocInvalidated && prevOc && Number.isFinite(prevOc.message)) ? prevOc.message : -1,
+    session: (active.has('opencode') && !rebuild && !ocInvalidated && prevOc && Number.isFinite(prevOc.session)) ? prevOc.session : -1
   }
+  // État pi antérieur : fichiers suivis (invalidés si la source a été re-pointée)
+  const prevPiFiles = (active.has('pi') && !rebuild && !piInvalidated && prevPi && prevPi.files) ? prevPi.files : {}
 
   // Vue : RÉPARABLE pendant la passe (passe corrective 20/09, revue). Une vue
   // absente, de version antérieure ou EN RETARD sur state.json ne repart plus d'une
@@ -215,6 +294,12 @@ async function _ingest (root, paths, dbPath, opts) {
   let maxSesUp = -1
   let rawWritten = 0
   let shardsTouched = 0
+  // Accus de la source pi (portée fonction : lus après le try/catch de publication)
+  let piFiles = null
+  let piOrphans = []
+  let piIgnored = {}
+  // Sources de l'état FINAL (calculées après le delta, avant le COMMIT)
+  let finalSources = null
   const counts = { added: 0, updated: 0, unchanged: 0, sessionsAdded: 0, sessionsUpdated: 0 }
   const sesTouched = new Map() // id → session finale (modifiées seulement)
 
@@ -304,27 +389,41 @@ async function _ingest (root, paths, dbPath, opts) {
     const insRef = vdb.prepare('INSERT OR REPLACE INTO rawrefs (rawRef, eventId, sessionId, ts, role, tool, cmd) VALUES (?,?,?,?,?,?,?)')
 
     // Ligne de titre synthétique d'une session (décision 17/09) : id = id de session,
-    // role 'title'. Retirée/réécrite quand le titre change ou disparaît.
+    // role 'title'. Retirée/réécrite quand le titre change ou disparaît — ou quand
+    // la SOURCE change (add-pi-adapter, D1 : la ligne porte la source de sa
+    // session ; une session migrée d'une source à l'autre réécrit sa ligne).
     const upsertTitleRow = (s) => {
+      const source = s.source ?? 'opencode'
       const old = selEv.get(s.id)
-      const sameTitle = old && old.text === (s.title ?? null)
+      let sameTitle = false
+      if (old) {
+        try {
+          const oldTitle = JSON.parse(old.json)
+          sameTitle = oldTitle.text === (s.title ?? null) && (oldTitle.source ?? 'opencode') === source
+        } catch { sameTitle = false }
+      }
       if (old && !sameTitle) {
         if (usable) delFts.run(old.rid, old.text ?? '', old.cmd ?? '')
         delEv.run(s.id)
       }
       if (s.title && !sameTitle) {
-        const tj = { schemaVersion: 1, id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title', text: s.title, repo: s.repo ?? null }
+        const tj = { schemaVersion: 1, source, id: s.id, sessionId: s.id, ts: s.tsCreated ?? s.tsUpdated ?? 0, role: 'title', text: s.title, repo: s.repo ?? null }
         const info = insEv.run(s.id, s.id, tj.ts, 'title', null, s.repo ?? null, null, null, s.title, JSON.stringify(tj))
         if (usable) insFts.run(info.lastInsertRowid, s.title, null)
       }
     }
 
+    const delRef = vdb.prepare('DELETE FROM rawrefs WHERE eventId = ?')
     const upsertEvent = (e) => {
       const jsonLine = JSON.stringify(e)
       const old = selEv.get(e.id)
       if (old) {
         if (old.json === jsonLine) { counts.unchanged++; return } // idempotence : rien à faire
         if (usable) delFts.run(old.rid, old.text ?? '', old.cmd ?? '')
+        // add-pi-adapter (revue) : les références de preuves de l'ANCIENNE version
+        // sont retirées — un événement relu dont le rawRef a disparu ne doit plus
+        // laisser une preuve scannable par --raw (réinsertion sélective ci-dessous).
+        delRef.run(e.id)
         delEv.run(e.id)
         counts.updated++
       } else {
@@ -370,18 +469,26 @@ async function _ingest (root, paths, dbPath, opts) {
       }
     }
 
-    // ── 1. delta lu dans la source, par lots bornés (watermark en requête) ──
-    // Les événements arrivent GROUPÉS PAR SESSION (ORDER BY session_id) : chaque
-    // session est finalisée (shard fusionné + écrit) dès que le flux passe à la
+    // ── 1. delta lu dans les sources actives, MÊME passe de publication ──
+    // (design D2 : le protocole marqueur → staging → renames → COMMIT → state
+    // couvre le delta des deux sources en une seule passe). Ordre déterministe :
+    // opencode d'abord, pi ensuite — les id des deux espaces sont disjoints
+    // (ses_* vs pi:*), le staging par session n'en est pas affecté.
+    //
+    // Les événements arrivent GROUPÉS PAR SESSION (adaptateur) : chaque session
+    // est finalisée (shard fusionné + écrit) dès que le flux passe à la
     // suivante — jamais d'accumulation du delta entier en mémoire.
-    await adaptPaged(dbPath, since, {
-      batchSize: Number(process.env.SDIG_INGEST_BATCH || 2000)
-    }, (batch) => {
+    const handleBatch = (batch) => {
       for (const s of batch.sessions) {
+        // add-pi-adapter (D1) : toute ligne produite porte sa source — les lignes
+        // opencode nouvellement écrites/réécrites sont marquées ici ; les lignes
+        // existantes ne sont pas réécrites pour seule addition du champ.
+        if (s.source == null) s.source = 'opencode'
         upsertSession(s)
         if (s.tsUpdated > maxSesUp) maxSesUp = s.tsUpdated
       }
       for (const e of batch.events) {
+        if (e.source == null) e.source = 'opencode'
         if (!cur || cur.sessionId !== e.sessionId) {
           finalizeCurrent()
           cur = { sessionId: e.sessionId, evs: new Map() }
@@ -393,8 +500,58 @@ async function _ingest (root, paths, dbPath, opts) {
       for (const r of batch.rawOutputs) writeRaw(r)
       if (batch.maxMessageUpdate > maxMsgUp) maxMsgUp = batch.maxMessageUpdate
       if (batch.maxSessionUpdate > maxSesUp) maxSesUp = batch.maxSessionUpdate
-    })
+    }
+
+    if (active.has('opencode')) {
+      await adaptPaged(dbPath, since, {
+        batchSize: Number(process.env.SDIG_INGEST_BATCH || 2000)
+      }, handleBatch)
+      finalizeCurrent()
+    }
+
+    // ── 1b. source pi (adaptateur dédié) : même staging, mêmes upserts ──
+    if (active.has('pi')) {
+      const piResult = adaptPi(piPath, { files: prevPiFiles }, {
+        batchSize: Number(process.env.SDIG_INGEST_BATCH || 2000)
+      }, (batch) => {
+        for (const s of batch.sessions) {
+          if (s.source == null) s.source = 'pi'
+          upsertSession(s)
+        }
+        for (const e of batch.events) {
+          if (e.source == null) e.source = 'pi'
+          if (!cur || cur.sessionId !== e.sessionId) {
+            finalizeCurrent()
+            cur = { sessionId: e.sessionId, evs: new Map() }
+          }
+          cur.evs.set(e.id, e)
+          upsertEvent(e)
+        }
+        for (const r of batch.rawOutputs) writeRaw(r)
+        finalizeCurrent()
+      })
+      piFiles = piResult.files
+      piOrphans = piResult.orphans || []
+      piIgnored = piResult.ignored || {}
+    }
     finalizeCurrent()
+
+    // ── Sources de l'état FINAL : les actives sont mises à jour, les inactives
+    // conservent leur état antérieur (jeton compris — la fraîcheur vue/state
+    // reste exacte pour une source simplement absente de cette passe).
+    finalSources = {}
+    if (active.has('opencode')) {
+      const message = Math.max(since.message, maxMsgUp)
+      const session = Math.max(since.session, maxSesUp)
+      finalSources.opencode = { path: dbPath, message, session, token: ocTokenOf(message, session) }
+    } else if (prevOc) {
+      finalSources.opencode = prevOc
+    }
+    if (active.has('pi')) {
+      finalSources.pi = { path: piPath, files: piFiles, token: piTokenOf(piFiles) }
+    } else if (prevPi) {
+      finalSources.pi = prevPi
+    }
   } catch (e) {
     // Échec avant publication : rollback de la vue ; le marqueur reste posé —
     // la passe suivante réconcilie. Aucun shard partiel publié (renames non faits).
@@ -445,11 +602,14 @@ async function _ingest (root, paths, dbPath, opts) {
   // vue réparée pendant la passe (base reconstruite + delta) : FTS reconstruit
   // en une fois depuis le contenu — les insertions delta sont couvertes par le rebuild
   if (!usable) vdb.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
+  // Watermark PAR SOURCE (design D2) : une ligne par source de l'état final —
+  // jeton de fraîcheur ; opencode conserve en plus ses epochs. Les sources
+  // inactives cette passe portent leur état inchangé (jeton conservé).
   vdb.prepare('DELETE FROM watermark').run()
-  vdb.prepare('INSERT INTO watermark (message, session) VALUES (?,?)').run(
-    Math.max(since.message, maxMsgUp),
-    Math.max(since.session, maxSesUp)
-  )
+  for (const [name, s] of Object.entries(finalSources)) {
+    vdb.prepare('INSERT INTO watermark (source, token, message, session) VALUES (?,?,?,?)')
+      .run(name, s.token, s.message ?? null, s.session ?? null)
+  }
   vdb.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run('layoutVersion', String(LAYOUT_VERSION))
   vdb.exec('COMMIT') // ← point de publication
   vdb.pragma('wal_checkpoint(TRUNCATE)')
@@ -467,12 +627,10 @@ async function _ingest (root, paths, dbPath, opts) {
     ? { sessions: prevCounts.sessions + counts.sessionsAdded, events: prevCounts.events + counts.added }
     : { sessions: countSessionsFile(paths.sessions), events: countEventsView(root) }
   const state = {
-    source: dbPath,
-    message: Math.max(since.message, maxMsgUp),
-    session: Math.max(since.session, maxSesUp),
-    updatedAt: Date.now(),
     layoutVersion: LAYOUT_VERSION,
-    counts: totals
+    updatedAt: Date.now(),
+    counts: totals,
+    sources: finalSources
   }
   atomicWrite(paths.state, JSON.stringify(state, null, 2) + '\n')
   fs.rmSync(paths.marker, { force: true }) // retiré en tout dernier
@@ -484,7 +642,16 @@ async function _ingest (root, paths, dbPath, opts) {
     rawWritten,
     swept,
     shardsTouched,
-    watermark: { message: state.message, session: state.session },
+    sources: finalSources,
+    notes,
+    pi: active.has('pi')
+      ? { path: piPath, files: Object.keys(piFiles).length, orphans: piOrphans, ignored: piIgnored }
+      : null,
+    migratedFromFlat: flatState,
+    watermark: {
+      message: finalSources.opencode?.message ?? -1,
+      session: finalSources.opencode?.session ?? -1
+    },
     rebuild
   }
 }

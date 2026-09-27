@@ -3,22 +3,26 @@
 **Archéologie de sessions AI.** Retrouver ce qui s'est vraiment passé dans tes sessions opencode : « c'était quoi le fix du bug de proxy en juin ? » devient une requête, pas une devine.
 
 ```
-[sources]          [corpus v2]                     [retrievers]        [sortie]
-opencode.db  ──►  sessions.jsonl            ──►   vue/index.db  ──►   sdig "bug proxy"
-claude (v1+)      events/<p>/<ses>.jsonl          (FTS5 + JSON        --repo --after --model
-zsh, git (v1+)    raw/<p>/<part>.txt               chemin de lecture)  --json
-                  state.json (layoutVersion: 2)   └─ fusion RRF ─┘
+[sources]                 [corpus v2 multi-source]        [retrievers]        [sortie]
+opencode.db   ──┐         sessions.jsonl            ──►   vue/index.db  ──►   sdig "bug proxy"
+(SQLite, RO)    ├──────►  events/<p>/<ses>.jsonl          (FTS5 + JSON        --repo --after --model
+~/.pi/agent/  ──┘         raw/<p>/<part>.txt               chemin de lecture)  --source pi
+sessions/*.jsonl          state.json (layoutVersion: 2,   └─ fusion RRF ─┘
+(JSONL, RO)               sources: opencode | pi)
 ```
 
 ## Principes
 
-- **Corpus = archive, index = vue.** Le JSONL canonique (grain : le message) est la référence, immuable et versionnée (`schemaVersion`). Les index sont jetables, reconstruisables, remplaçables.
-- **Adaptateurs isolés.** Chaque source (opencode en v0) a son adaptateur vers le même schéma. Le cœur ne lit jamais une source directement.
-- **Retrievers derrière une interface.** FTS5/BM25 en v0, embeddings ensuite, fusion RRF déjà prévue — sans réécriture.
+- **Corpus = archive, index = vue.** Le JSONL canonique (grain : le message) est la référence — **archive normalisée et versionnée** (`schemaVersion`) : la dernière version connue d'un message y remplace la précédente. Les index sont jetables, reconstruisables, remplaçables.
+- **Adaptateurs isolés.** Chaque source a son adaptateur vers le même schéma (opencode en v0 ; pi en v0.7 — JSONL append-only). Le cœur ne lit jamais une source directement.
+- **Provenance.** Toute ligne produite porte `source` (`opencode`/`pi`) — filtrable (`--source`), affichée (`--json`). Le corpus est une **archive multi-source** : les sources sont combinées à l'ingestion ; supprimer une source ne retire pas ses shards.
+- **Retrievers derrière une interface.** FTS5/BM25 en v0, embeddings ensuite, fusion RRF prévue (futur, conditionné) — sans réécriture.
 - **`model`, `cost`, `tokens`, `exitCode` capturés dès le départ.** Ouvre la porte aux stats de comparaison de modèles sur usage réel (v2).
 - **Sorties d'outils hors corpus** (`raw/`) : le JSONL reste léger, le BM25 reste propre — seule la ligne de commande est indexée.
 
 ## Statut
+
+**v0.7 : adaptateur pi + corpus fusionné — implémentée.** Deux sources dans une seule passe de publication (protocole marqueur/staging/renames/COMMIT/state inchangé) ; état `state.json` multi-source (migration de la forme plate au premier COMMIT, watermarks opencode conservés) ; jetons de fraîcheur par source (pi : md5 des fichiers suivis — toute divergence vue/état ⇒ reconstruction depuis les shards, lecture refusée entre-temps) ; `--source all|opencode|pi` et `--pi-dir` sur ingest/refresh, filtre de provenance sur la recherche et le scan `--raw` ; `sdig read pi:<sessionId>` avec l'id préfixé ; ids d'événement et de preuve **qualifiés par session** (`pi:<sessionId>:<id>` — fork/reprise rejouent les ids de lignes) ; partIds pi validés avant toute dérivation de chemin. **208 tests passent.** Restent ouverts : les limites scale-corpus ci-dessous ; les suppositions D7 (bash imbriqués, `cancelled`, sous-agents) à épingle sur sessions riches ; banc inchangé. Détail : [design](openspec/changes/add-pi-adapter/design.md).
 
 **v0.6 : implémentée, passe corrective en cours — scaling non encore validé.** Layout v2 shardé par condensat md5, vue SQLite reconstruisable en chemin de lecture, fenêtres par clé et transaction de lecture ; protocole marqueur/staging/publication, migration sans source et empreinte sur les octets. Les lots courts CLI/contexte/scanner et réparation FTS sont corrigés ; **51 tests ciblés passent**. Restent notamment verrouillage concurrent, mémoire/coûts résiduels, banc fidèle et validation sur machine cible. État détaillé et reprise : [progress.md](openspec/changes/scale-corpus/progress.md), [tâches](openspec/changes/scale-corpus/tasks.md). Aucun changement du corpus réel pendant cette passe corrective.
 
@@ -34,6 +38,13 @@ sdig read <session> --around <msgId> --full  # texte intégral (marqueur de tron
 sdig read <session> --at <msgId|date>  # état À L'INSTANT de l'ancre (horodatage en UTC) : messages postérieurs masqués
 sdig raw <partId>                    # la sortie d'outil complète (preuve, lecture par blocs)
 sdig "connection refused" --raw     # chercher aussi dans les sorties brutes (stderr)
+sdig "bug proxy" --source pi         # seuls les hits des sessions pi (titres compris)
+sdig read pi:<sessionId>             # dérouler une session pi — l'id préfixé est l'adresse canonique
+sdig read pi:<sessionId> --around pi:<sessionId>:<msgId> --at pi:<sessionId>:<msgId>  # ancre = id d'événement
+sdig raw pi:<sessionId>:<toolCallId>  # preuve pi rattachée à un appel d'agent
+sdig raw pi:<sessionId>:<ligne>       # preuve orpheline : exécution directe hors agent, signalée à l'ingestion, hors scan --raw
+sdig ingest --source pi              # n'ingérer que le delta pi (absence d'une source explicite = erreur)
+# ids d'événement et de preuve qualifiés par session (pi:<sessionId>:<id>) : fork/reprise rejouent les mêmes ids de lignes
 sdig migrate         # migration corpus v1 → layout v2, sans la source (en flux, vérifiée)
 sdig fingerprint     # empreinte déterministe du corpus (intégrité / détection hors ingestion)
 sdig status          # état corpus / vue
@@ -42,7 +53,15 @@ npm run eval         # historique : 28/28 figé, 24/28 vivant ; non relancé dan
 node scripts/bench.js --n 20000   # banc à corriger avant toute nouvelle conclusion de performance
 ```
 
-Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home` ou `SESSION_DIG_HOME`) ; base source : `~/.local/share/opencode/opencode.db` en lecture seule (`--db` / `SESSION_DIG_DB`). **Changement d'usage v0.6** : `sdig read` dépend de la vue (`index.db`) — refus explicite si absente ou périmée, réparer avec `sdig refresh`.
+Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home` ou `SESSION_DIG_HOME`). Sources en lecture seule : base opencode `~/.local/share/opencode/opencode.db` (`--db` / `SESSION_DIG_DB` — **propre à opencode**, jamais appliquée à pi) ; répertoire des sessions pi `~/.pi/agent/sessions` (`--pi-dir` / `SESSION_DIG_PI_DIR`). `sdig status` affiche le watermark par source (opencode : epoch ; pi : fichiers suivis + jeton) et signale les absences. **Changement d'usage v0.6** : `sdig read` dépend de la vue (`index.db`) — refus explicite si absente ou périmée, réparer avec `sdig refresh`.
+
+## Pertes documentées (corpus fusionné)
+
+- **Branches pi aplaties** : l'arbre `parentId` est déroulé par ordre temporel — une exploration abandonnée apparaît mêlée à la branche principale.
+- **`context_edit` non appliqué** : l'archive garde le message original — l'append-only est physique, pas sémantique.
+- **Parts `thinking` ignorées** : hors `text`, hors index (réversible par rebuild depuis la source).
+- **Orphelines hors scan `--raw`** : preuves non référencées par un événement (exécution directe hors agent), lisibles par `sdig raw pi:<sessionId>:<id>` explicite et signalées à l'ingestion.
+- **Lignes finales non terminées** (session pi vivante) : différées à la passe suivante — jamais acquittées partiellement.
 
 ## Roadmap
 
@@ -54,8 +73,10 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 | v0.3 | **jamais de coupure silencieuse** (analyse du 1er passage du jeu naturel, 19/09) : marqueur de troncation (compteurs + chemin), `--full`/`--chars N`, `--json` intégral + 2 questions brûlées en régression | ✅ fait |
 | v0.4 | **évaluation traçable** (20/09) : audit déterministe des accès (`scripts/audit-toolcalls.mjs`, motifs épinglés, « à examiner », statut « audit incomplet ») + grille de notation de l'éval naturelle | ✅ fait |
 | v0.5 | **ancrage temporel** (20/09) : `sdig read --at <ancre>` masque les messages postérieurs à l'instant demandé — ancre affichée, marqueur explicite, `--json` (ancre + compte) | ✅ fait |
+| v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication atomique, migration sans source | implémentée, passe corrective en cours ([progress](openspec/changes/scale-corpus/progress.md)) |
+| v0.7 | **corpus fusionné** : adaptateur pi (JSONL append-only), état multi-source + jetons de fraîcheur par source, `--source`/`--pi-dir`, filtre de provenance (`--source`, `--json`), partIds pi validés, orphelines signalées | ✅ fait |
 | v1 | petit serveur MCP lecture seule : les agents creusent l'historique eux-mêmes | à venir |
 | v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
 | v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |
 
-Corpus local uniquement — jamais publié, jamais transmis (fixtures synthétiques pour les tests).
+Corpus local uniquement — jamais publié, jamais transmis (fixtures synthétiques pour les tests). **Les sessions pi peuvent contenir du matériel sensible** (chemins Termux, jetons, extraits de configuration) : le corpus reste sur la machine, mais ce que le CLI retourne peut être transmis au fournisseur du modèle appelant — mêmes précautions que pour le serveur MCP prévu en v1.

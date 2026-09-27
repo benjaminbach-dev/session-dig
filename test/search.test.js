@@ -1,4 +1,10 @@
 import { test, before, after } from 'node:test'
+
+// add-pi-adapter : restauration de l'environnement hermétique (indépendance du runner)
+after(() => {
+  if (__prevPiDir === undefined) delete process.env.SESSION_DIG_PI_DIR
+  else process.env.SESSION_DIG_PI_DIR = __prevPiDir
+})
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -9,6 +15,10 @@ import { index, search } from '../src/retriever/bm25.js'
 import { parseDateBound } from '../src/util.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-search-'))
+// add-pi-adapter : source pi hermétique (jamais le ~/.pi réel dans les tests)
+const __prevPiDir = process.env.SESSION_DIG_PI_DIR
+process.env.SESSION_DIG_PI_DIR = path.join(tmp, 'pi-absente')
+
 const dbPath = path.join(tmp, 'fixture.db')
 const root = path.join(tmp, 'corpus')
 const indexPath = path.join(root, 'index.db')
