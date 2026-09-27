@@ -22,7 +22,7 @@ sessions/*.jsonl          state.json (layoutVersion: 2,   └─ fusion RRF ─�
 
 ## Statut
 
-**v0.7 : adaptateur pi + corpus fusionné — implémentée.** Deux sources dans une seule passe de publication (protocole marqueur/staging/renames/COMMIT/state inchangé) ; état `state.json` multi-source (migration de la forme plate au premier COMMIT, watermarks opencode conservés) ; jetons de fraîcheur par source (pi : md5 des fichiers suivis — toute divergence vue/état ⇒ reconstruction depuis les shards, lecture refusée entre-temps) ; `--source all|opencode|pi` et `--pi-dir` sur ingest/refresh, filtre de provenance sur la recherche et le scan `--raw` ; `sdig read pi:<sessionId>` avec l'id préfixé ; ids d'événement et de preuve **qualifiés par session** (`pi:<sessionId>:<id>` — fork/reprise rejouent les ids de lignes) ; partIds pi validés avant toute dérivation de chemin. **208 tests passent.** Restent ouverts : les limites scale-corpus ci-dessous ; les suppositions D7 (bash imbriqués, `cancelled`, sous-agents) à épingle sur sessions riches ; banc inchangé. Détail : [design](openspec/changes/add-pi-adapter/design.md).
+**v0.7 : adaptateur pi + corpus fusionné — implémentée.** Deux sources dans une seule passe de publication (protocole marqueur/staging/renames/COMMIT/state inchangé) ; état `state.json` multi-source (migration de la forme plate au premier COMMIT, watermarks opencode conservés) ; jetons de fraîcheur par source (pi : md5 des fichiers suivis — toute divergence vue/état ⇒ reconstruction depuis les shards, lecture refusée entre-temps) ; `--source all|opencode|pi` et `--pi-dir` sur ingest/refresh, filtre de provenance sur la recherche et le scan `--raw` ; `sdig read pi:<sessionId>` avec l'id préfixé ; ids d'événement et de preuve **qualifiés par session** (`pi:<sessionId>:<id>` — fork/reprise rejouent les ids de lignes) ; partIds pi validés avant toute dérivation de chemin. **208 tests passent.** Restent ouverts : les limites scale-corpus ci-dessous ; les suppositions D7 (bash imbriqués, `cancelled`, sous-agents) à épingler sur sessions riches ; banc inchangé. Détail : [design](openspec/changes/add-pi-adapter/design.md).
 
 **v0.6 : implémentée, passe corrective en cours — scaling non encore validé.** Layout v2 shardé par condensat md5, vue SQLite reconstruisable en chemin de lecture, fenêtres par clé et transaction de lecture ; protocole marqueur/staging/publication, migration sans source et empreinte sur les octets. Les lots courts CLI/contexte/scanner et réparation FTS sont corrigés ; **51 tests ciblés passent**. Restent notamment verrouillage concurrent, mémoire/coûts résiduels, banc fidèle et validation sur machine cible. État détaillé et reprise : [progress.md](openspec/changes/scale-corpus/progress.md), [tâches](openspec/changes/scale-corpus/tasks.md). Aucun changement du corpus réel pendant cette passe corrective.
 
@@ -65,6 +65,13 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 
 ## Roadmap
 
+**Prochain jalon, recentré à la demande explicite de l'utilisateur : usage solo local validé sur PC.**
+1. Valider les prérequis d'intégrité/reprise et d'exclusion des écrivains avant usage sur corpus réel.
+2. Tester ingestion et recherche CLI sur PC, puis un MCP minimal `search`/`read`/`status` : recherche top-k sans curseur, lecture complète par fragments, confidentialité dès le départ. Un seul travail actif, sans timeout applicatif garanti.
+3. Optimiser selon les mesures ; raw MCP, pagination search, parallélisme et timeout strict restent des extensions possibles sur accord. Les bancs étendus ne bloquent pas le premier jalon ; aucun change n'est automatiquement déclaré terminé.
+
+Détails : [jalon et validation PC](openspec/changes/scale-corpus/proposal.md), [tâches MCP](openspec/changes/add-mcp-server/tasks.md). Ce recentrage modifie les specs, pas le code déjà livré.
+
 | Phase | Contenu | Statut |
 |-------|---------|--------|
 | v0 | adaptateur opencode + corpus + retriever FTS5 + CLI `sdig` | ✅ fait |
@@ -73,9 +80,9 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 | v0.3 | **jamais de coupure silencieuse** (analyse du 1er passage du jeu naturel, 19/09) : marqueur de troncation (compteurs + chemin), `--full`/`--chars N`, `--json` intégral + 2 questions brûlées en régression | ✅ fait |
 | v0.4 | **évaluation traçable** (20/09) : audit déterministe des accès (`scripts/audit-toolcalls.mjs`, motifs épinglés, « à examiner », statut « audit incomplet ») + grille de notation de l'éval naturelle | ✅ fait |
 | v0.5 | **ancrage temporel** (20/09) : `sdig read --at <ancre>` masque les messages postérieurs à l'instant demandé — ancre affichée, marqueur explicite, `--json` (ancre + compte) | ✅ fait |
-| v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication atomique, migration sans source | implémentée, passe corrective en cours ([progress](openspec/changes/scale-corpus/progress.md)) |
+| v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication transactionnelle de la vue et reprise des shards, migration sans source | implémentée, passe corrective en cours ([progress](openspec/changes/scale-corpus/progress.md)) |
 | v0.7 | **corpus fusionné** : adaptateur pi (JSONL append-only), état multi-source + jetons de fraîcheur par source, `--source`/`--pi-dir`, filtre de provenance (`--source`, `--json`), partIds pi validés, orphelines signalées | ✅ fait |
-| v1 | petit serveur MCP lecture seule : les agents creusent l'historique eux-mêmes | à venir |
+| v1 | MCP local lecture seule : `search` top-k, `read` complet par fragments, `status` — périmètre solo ci-dessus | à venir ; usage réel après les prérequis d'intégrité |
 | v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
 | v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |
 

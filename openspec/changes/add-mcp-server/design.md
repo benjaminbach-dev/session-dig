@@ -1,10 +1,16 @@
 # Design — add-mcp-server
 
-## D0 — V1 recentrée (20/09)
+> **Recentrage effectué à la demande explicite de l'utilisateur.** Ordre de lecture resserré : D0 (cadrage), D1 (transport), D2 (catalogue), D3 (bornes), D4 (ancrage), D5 (fraîcheur), D6 (concurrence, contrat honnête), D7 (continuation), D8 (recollement), D9 (preuves brutes — reportées), D10 (confidentialité).
 
-Décision utilisateur : rendre le CLI accessible aux agents, sans transformer cette façade en moteur de restitution généraliste. La sécurité, la lecture complète accessible et la sémantique de `at` restent requises. Les totaux exhaustifs obligatoires, les partiels après timeout et le déterminisme de l'enveloppe technique sont retirés du contrat v1.
+## D0 — Cadrage v1 re-scopé
 
-Ce change reste **documentaire**. Aucun SDK installé, aucun code MCP, aucun serveur lancé ni manifeste modifié. Les nombres ci-dessous sont des plafonds de conception ; leur évolution doit être documentée et validée, pas changée silencieusement dans le code.
+Première livraison **réduite, demandée explicitement** : rendre le CLI accessible aux agents sans transformer cette façade en moteur de restitution généraliste. La sécurité, la lecture complète accessible et la sémantique de `at` restent requises ; les totaux exhaustifs obligatoires et le déterminisme de l'enveloppe technique restent hors contrat v1.
+
+- **En v1 (MVP)** : `sdig_search`, `sdig_read`, `sdig_status` sur transport Streamable HTTP loopback (D1).
+- **Hors MVP, à réexaminer selon l'usage et sur accord explicite** : `sdig_raw` avec ses garde-fous (D9), pagination des résultats de recherche, timeout applicatif strict avec arrêt observable et concurrence >1 (D6). Ce sont des extensions possibles, pas des livraisons déjà commandées. Les garanties de confidentialité et les descriptions des outils (D10) restent obligatoires dès le MVP.
+- **Jalon J-MCP** : usage solo local validé sur PC, après les prérequis d'intégrité du lot A de `scale-corpus`. La validation CLI sur PC peut précéder le MCP ; les bancs étendus ne bloquent pas cette première utilisation.
+
+Ce change reste **documentaire**. Aucun SDK installé, aucun code MCP, aucun serveur lancé ni manifeste modifié. Les nombres ci-dessous sont des plafonds de conception ; leur évolution doit être documentée et validée, jamais changée silencieusement dans le code.
 
 ## D1 — Transport et confinement HTTP
 
@@ -14,21 +20,23 @@ Ce change reste **documentaire**. Aucun SDK installé, aucun code MCP, aucun ser
 - Ces contrôles limitent le rebinding DNS et les origines externes ; **ils ne bloquent pas un client local ni une page d'origine locale admise**. Loopback n'est pas une authentification.
 - Token statique optionnel, exigé sur chaque requête lorsqu'il est configuré, comparaison en temps constant et jamais journalisé. Sans token, pas d'authentification des clients locaux.
 - Le corpus, l'index et la base source ne sont jamais écrits par le serveur. SQLite ouvert en lecture seule ; ne pas en déduire une absence absolue de contention avec les opérations CLI.
+- Aucun deuxième transport ni installation automatique : un seul mode de lancement, documenté, validé par un client MCP réel sur PC au jalon commun. L'ajout au manifeste Termux reste une décision propriétaire distincte (D11).
 
 ## D2 — Catalogue et responsabilités
 
 | Outil | Paramètres initiaux | Réponse et suite |
 |---|---|---|
-| `sdig_search` | `query` obligatoire (≤ 512 caractères), `repo`, `session` (préfixe littéral échappé), `after`, `before`, `model`, `role`, `agent`, `source`, `limit` (défaut 10, max 50), `ctx` (0–5) | hits groupés par session, extraits et identifiants complets ; curseur pour les hits suivants ; texte complet via `sdig_read` |
+| `sdig_search` | `query` obligatoire (≤ 512 caractères), `repo`, `session` (préfixe littéral échappé), `after`, `before`, `model`, `role`, `agent`, `source`, `limit` (défaut 10, max 50), `ctx` (0–5) | meilleurs hits bornés, groupés par session, extraits et identifiants complets ; sans curseur ; texte complet via `sdig_read` |
 | `sdig_read` | `session` obligatoire, `around`, `ctx` (0–50), `tail` (1–200), `at`, `chars` (1–20 000), `full` | vue temporelle, fragments de messages et curseur de continuation |
-| `sdig_raw` | `partId` obligatoire, `head` (1–2 000 lignes par page), `maxBytes` (1–65 536 octets par page) | fragments de preuve, `unvetted: true`, continuation ; outil absent par défaut |
 | `sdig_status` | aucun | compteurs, watermark, état de l'index ; aucun chemin local |
 
-Les trois outils paginés acceptent aussi `cursor`. Pour continuer, l'appelant fournit le curseur seul ; il n'a pas à répéter les paramètres initiaux. Un mélange curseur + paramètres de nouvelle requête est refusé (`invalid_params`). `status` n'a pas de curseur.
+Seul `sdig_read` accepte `cursor`. Pour continuer une lecture, l'appelant fournit le curseur seul ; il n'a pas à répéter les paramètres initiaux. Un mélange curseur + paramètres de nouvelle requête est refusé (`invalid_params`). Un curseur soumis à `search` ou `status` est également refusé : aucune pagination de recherche, même partielle, n'est à implémenter dans le MVP.
 
-`sdig_search` accepte `source` (`opencode`|`pi`), de sémantique identique au filtre CLI du change pi-adapter — messages et titres synthétiques —, conservé en continuation ; un nom inconnu rend zéro hit, pas une erreur. `agent` filtre le champ exact : en v0 pi ce champ est `null`, donc un filtre non nul exclut tous les messages pi ; les descriptions d'outils le documentent. La v1 n'expose pas le scan `--raw` : `sdig_raw(partId)` n'est pas ce scan, et un éventuel scan MCP ultérieur serait opt-in, filtrerait avant lecture des preuves et définirait son propre budget — il ne découle pas de `source`.
+`sdig_search` accepte `source` (`opencode`|`pi`), de sémantique identique au filtre CLI du change pi-adapter — messages et titres synthétiques — ; un nom inconnu rend zéro hit, pas une erreur. `agent` filtre le champ exact : en v0 pi ce champ est `null`, donc un filtre non nul exclut tous les messages pi ; les descriptions d'outils le documentent. La v1 n'expose ni le scan `--raw` du CLI, ni `sdig_raw(partId)` (reporté, D9). La recherche top-k n'est pas un export exhaustif ; elle ne garantit pas pour autant que SQLite n'effectuera aucun parcours coûteux.
 
-La recherche fournit un moyen de repérer les sources, **pas un second lecteur intégral**. Un extrait coupé porte son caractère d'extrait et une référence exploitable (session et message) vers `read`. Les résultats synthétiques de titre sont identifiés comme tels et pointent vers la session, pas vers un faux message. Les voisins de contexte sont eux aussi des extraits référencés.
+La recherche fournit un moyen de repérer les sources, **pas un second lecteur intégral**. Un extrait coupé porte son caractère d'extrait et une référence exploitable (session et message) vers `read`. Les résultats synthétiques de titre sont identifiés comme tels et pointent vers la session, pas vers un faux message. Les voisins de contexte sont eux aussi des extraits référencés ; le texte complet reste accessible par `sdig_read`.
+
+Pour **affiner** une recherche, l'appelant précise la requête ou ajoute des filtres restrictifs (`repo`, `session`, `source`, `after`/`before`, `model`, `role`, `agent`). `limit` et `ctx` ajustent le nombre de hits et leur contexte, sans accès garanti à toutes les correspondances. La description de l'outil annonce cette limite. L'ordre reste stable : scores égaux départagés par identifiant canonique complet en ordre binaire ; la sélection précède le regroupement par session.
 
 Les types invalides, nombres non entiers, valeurs négatives et chaînes dépassant leur taille permise sont refusés avant travail. Une limite numérique valide au-dessus du maximum est ramenée au plafond et cette adaptation est signalée. `ctx=0` est valide ; les tailles de pages nulles sont refusées.
 
@@ -36,14 +44,13 @@ Aucune sous-commande d'écriture, aucun shell, aucune URL ou chemin de fichier c
 
 ## D3 — Bornes et compteurs honnêtes
 
-Plafonds par appel : **50 hits**, **200 messages distincts**, **50 voisins de contexte par côté dans read** (`ctx≤50`, et `ctx≤5` dans search), **20 000 caractères de texte par message**, **65 536 octets de preuve brute**, **524 288 octets de réponse MCP sérialisée UTF-8**. Le budget total inclut les métadonnées, curseurs et éventuelles représentations dupliquées dans l'enveloppe MCP ; les fragments sont réduits avant sérialisation finale pour le respecter.
+Plafonds par appel : **50 hits par recherche** (top-k sans pagination), **200 messages distincts**, **50 voisins de contexte par côté dans read** (`ctx≤50`, et `ctx≤5` dans search), **20 000 caractères de texte par message**, **524 288 octets de réponse MCP sérialisée UTF-8**. Le budget total inclut les métadonnées, curseurs et éventuelles représentations dupliquées dans l'enveloppe MCP ; les fragments sont réduits avant sérialisation finale pour le respecter.
 
-- Priorité d'assemblage (arbitrage du 26/09) : les hits de la page précèdent leurs voisins de contexte ; les voisins remplissent le budget restant, coupures et comptes explicites par dimension, progression du curseur de liste garantie. Un élément dont la représentation minimale excède seule le budget total produit une erreur bornée, pas une boucle de curseurs sans progrès.
-
+- Priorité d'assemblage : les hits précèdent leurs voisins de contexte ; les voisins remplissent le budget restant, avec coupures et comptes explicites par dimension. Si le budget impose moins de hits que `limit`, la réduction est signalée, sans curseur de recherche. Dans `read`, chaque page non finale avance effectivement. Un élément dont la représentation minimale excède seule le budget total produit une erreur bornée, pas une boucle sans progrès.
 - `truncated` identifie les dimensions coupées, les quantités retenues exactes et, pour chacune, le total exact s'il est connu, sinon `null`. Aucun total estimé, aucun `COUNT` exhaustif obligatoire seulement pour renseigner un compteur.
-- L'absence de total exact ne signifie pas qu'il n'existe plus de résultats. La continuation de liste peut utiliser une lecture d'un élément supplémentaire pour savoir si une page suivante existe, sans compter tous les hits.
-- `nextCursor` est placé dans `truncated.nextCursor` quand la liste des hits ou le contenu de lecture a une suite. Une simple coupure d'extrait de recherche renvoie vers `read` : elle n'exige pas de curseur sur ce texte.
-- `full` augmente le budget de fragment jusqu'au plafond ; il ne désactive ni la borne par message ni le budget total. La suite reste accessible via le curseur.
+- L'absence de total exact ne signifie pas qu'il n'existe plus de résultats. Search signale la sélection top-k et l'éventuelle réduction par budget ; un total inconnu ne devient pas une affirmation d'exhaustivité. Aucun `nextCursor` n'est rendu par search.
+- Dans `read` seulement, `truncated.nextCursor` est présent s'il reste des messages ou fragments dans la vue choisie ; il est absent sur la dernière page. Une lecture d'un élément supplémentaire peut établir l'existence de la suite sans comptage global. Une coupure d'extrait de recherche renvoie vers `read`.
+- `full` augmente le budget de fragment jusqu'au plafond ; il ne désactive ni la borne par message ni le budget total. La suite reste accessible via le curseur : **aucun mode tronqué présenté comme complet** (`full` coupé porte explicitement sa suite).
 - Les comptes `anchor`, `maskedCount`, `visible` et `total` déjà fournis par la lecture CLI conservent leur sémantique ; la permission de total inconnu ne retire pas ces informations disponibles.
 
 ## D4 — Lecture temporelle
@@ -52,58 +59,61 @@ Plafonds par appel : **50 hits**, **200 messages distincts**, **50 voisins de co
 
 Le masquage n'est pas un contrôle d'accès : une nouvelle requête sans ancre reste possible. Aucune détection ni qualification de mutation d'état. Le lecteur choisit sa borne ; ancrer sur une question peut masquer la réponse postérieure qui documente l'état.
 
-## D5 — Preuves brutes et fichiers
+## D5 — Fraîcheur et déterminisme utile
 
-- `sdig_raw` absent du catalogue par défaut ; activation explicite `expose_raw: true`, journalisée. Aucune continuation ne contourne une désactivation ultérieure de l'outil.
-- `partId` est une entrée non fiable : validation syntaxique bornée des familles reconnues (identifiants opencode hérités, `pi:<sessionId>:<id local>` qualifié par session), existence dans les références de la vue, fichier dérivé de cette référence uniquement — la validation précède toute dérivation de chemin. Les partIds orphelins pi (exécutions sans `rawRef`) ne sont pas référencés dans la vue : refusés `invalid_part` en v1, sans parité avec la lecture explicite du CLI. Les caractères admis et longueurs maximales sont épinglés dans le change d'implémentation après confrontation aux fixtures des deux adaptateurs.
-- Résolution confinée à `raw/`, rejet des traversées, chemins absolus, liens symboliques et fichiers spéciaux. Contrôler le chemin canonique, l'ouverture sans suivi du lien final (`O_NOFOLLOW`) et le type du fichier effectivement ouvert ; expliciter les hypothèses sur les répertoires parents et tester les substitutions de fichier. Ne pas prétendre qu'un `realpath` préalable suffit à supprimer les courses.
-- Réponse `unvetted: true` et bornée, y compris en continuation. Le CLI n'est pas modifié.
-- Une continuation raw est liée à l'identité du fichier ouvert et du contenu lu ; invérifiable = `stale_cursor`. Une page touchant le marqueur d'ingestion porte l'avertissement du protocole de publication, sans contenu privé ; le snapshot SQLite n'est pas un snapshot des fichiers `raw/`.
+Les résultats portent `freshness: { sources, indexMtime, corpusVersion }` : `sources` est indexé par source — opencode expose ses deux watermarks, pi son jeton déterministe et son nombre de fichiers suivis si connu —, valeurs absentes ou `null` si indisponibles. `indexMtime` est un diagnostic, jamais une identité de génération.
 
-## D6 — Concurrence et erreurs
+Pour les continuations, l'identité de la génération **publiée de la vue** et ses watermarks par source lient les pages à l'état lu ; ne pas émettre de curseur prétendument sûr si cet état ne peut pas être identifié. Une vue en avance sur `state.json` (COMMIT avant écriture d'état) s'interprète selon le protocole de publication, jamais par comparaison d'ordre du jeton pi : **divergence jeton pi = `view_unavailable` temporaire jusqu'à réconciliation** — le curseur n'est émis que si la vue est identifiable ; l'appelant relance après réconciliation ; une lecture réussie rend des données **cohérentes**, pas une disponibilité permanente. Un changement détecté pendant la lecture invalide la page plutôt que d'assembler des générations différentes ; toutes les requêtes SQL d'une page partagent un snapshot.
 
-Deux appels de travail simultanés par défaut (configuration bornée et documentée à l'implémentation). Au-delà : `busy`, sans file non bornée. Un travail en cours d'arrêt occupe toujours son créneau.
+À corpus/index et paramètres identiques, les données d'un appel réussi et leur ordre sont identiques ; les curseurs, identifiants techniques et durées peuvent différer. Ajouter un champ est compatible ; retirer/renommer un champ ou réduire une borne exige un changement de spec. Une donnée indisponible n'est jamais inventée.
 
-Codes stables des erreurs applicatives : `unknown_session`, `invalid_part`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `view_unavailable`, `forbidden_host`, `busy`, `timeout`, `internal`. Une vue absente ou périmée donne `view_unavailable`, motif technique distingué sans chemin local ni contenu privé ; une requête sans terme exploitable (stopwords seuls) est `invalid_params`, jamais `internal`. Les erreurs ne recopient ni contenu d'archive, ni requête libre, ni secret. Les identifiants ne peuvent être repris dans une erreur ou un journal qu'après validation de leur format. Les erreurs de protocole MCP restent distinctes.
+## D6 — Concurrence, timeout et durée : contrat honnête
 
-## D7 — Fraîcheur et déterminisme utile
+Le service est **mono-travail** : un seul appel d'outil actif à la fois. À l'admission d'un appel, si le créneau est occupé, le service répond `busy` sans ajouter de file applicative. S'il est libre, l'appel peut démarrer. Ce contrat ne prétend pas supprimer les tampons du transport : une requête arrivée pendant un calcul synchrone peut n'être traitée qu'après sa fin, puis être admise.
 
-Les résultats de lecture portent `freshness: { sources, indexMtime, corpusVersion }` : `sources` est indexé par source — opencode expose ses deux watermarks, pi son jeton déterministe et son nombre de fichiers suivis si connu —, valeurs absentes ou `null` si indisponibles. `indexMtime` est un diagnostic, jamais une identité de génération. Pour les continuations, l'identité de la génération **publiée de la vue** et ses watermarks par source lient les pages à l'état lu ; ne pas émettre de curseur prétendument sûr si cet état ne peut pas être identifié. Une vue en avance sur `state.json` (COMMIT avant écriture d'état) s'interprète selon le protocole de publication, jamais par comparaison d'ordre du jeton pi. Un changement détecté pendant la lecture invalide la page plutôt que d'assembler des générations différentes ; toutes les requêtes SQL d'une page partagent un snapshot.
+- Les limites de taille (D3) bornent le **volume** des réponses, **pas la durée du calcul** : un `LIMIT` SQL ne fixe pas de borne de temps.
+- Aucun timeout applicatif garanti dans le MVP. Un `Promise.race` ne doit pas être présenté comme un arrêt du calcul ; un timeout ou une déconnexion du client ne prouve pas que le travail serveur est arrêté.
+- Pendant un calcul synchrone, le serveur peut être non réactif : **aucune promesse de `busy` immédiat**, d'annulation immédiate ou de délai de réponse. Une requête lente peut retarder tous les outils.
+- L'arrêt et la reprise sont manuels et documentés. Le MCP étant en lecture seule, son interruption ne déclenche ni réparation ni réconciliation du corpus. Il ferme ses connexions à l'arrêt normal ; aucun travail de fond détaché ne doit survivre à son arrêt. Un état d'ingestion déjà interrompue relève du CLI, jamais d'une réparation implicite MCP.
+- Timeout strict et concurrence >1 restent hors MVP. S'ils deviennent nécessaires, un change devra vérifier l'isolation et l'arrêt observable sur la pile réelle, y compris SQLite natif : pas de résultat partiel après timeout, pas de créneau libéré avant confirmation d'arrêt, pas de travail orphelin.
 
-À corpus/index et paramètres identiques, **les données d'un appel achevé avec succès et leur ordre** sont identiques. Les curseurs opaques, identifiants de requête et durées peuvent différer ; timeout et saturation sont des événements d'exécution, pas des données déterministes. L'ordre des hits doit être stable, avec départage des scores égaux par l'identifiant canonique complet en ordre binaire fixé, indépendant de la source ; le curseur de recherche reprend après la paire `(score, id)`. La pagination précède le regroupement de présentation par session.
+Codes applicatifs : `unknown_session`, `invalid_anchor`, `invalid_cursor`, `stale_cursor`, `invalid_params`, `view_unavailable`, `forbidden_host`, `busy`, `internal`. Aucun code `timeout` ni `invalid_part` dans le MVP. Les erreurs ne recopient ni archive, ni requête libre, ni secret, ni chemin local ; seuls des identifiants validés peuvent être repris. Une requête sans terme exploitable donne `invalid_params`. Les erreurs du protocole MCP restent distinctes.
 
-Ajouter un champ est compatible ; retirer/renommer un champ ou réduire une borne exige un changement de spec. Une donnée indisponible n'est jamais inventée.
+## D7 — Continuation de read uniquement
 
-## D8 — Continuation adaptée à chaque outil
-
-- `search` : pagination **de la liste des hits**, filtres et ordre conservés. Pas de texte intégral fragmenté dans les hits ni dans leur contexte ; référence vers `read` pour ce besoin.
+- `search` : aucun curseur ni pagination dans le MVP. Extraits et voisins référencés vers `read`, affinage par requête et filtres.
 - `read` : pagination de la vue choisie et fragmentation des messages longs, avec identifiant de message, offset et indicateur de fin de message. Une même vue peut couvrir plusieurs pages ; aucun contenu de cette vue ne devient inaccessible à cause d'un plafond.
-- `raw` actif : fragmentation de la preuve avec offsets explicites. `head` et `maxBytes` bornent chaque page, pas la quantité totale récupérable.
 - Pagination à la requête et fragments extraits avant construction de la réponse : l'implémentation ne matérialise pas une session entière pour la découper (le chargement intégral actuel du lecteur CLI est un fait de code, pas un contrat) ; un élément minimal excédant le budget donne une erreur bornée.
-- Le schéma d'implémentation documentera les unités des offsets (caractères ou octets) et l'encodage. Tests de recollement exact : pas de trou, doublon ou caractère Unicode perdu, y compris accents/emoji et coupure par budget global. La preuve brute se reconstitue sans perte d'octet.
-- Curseur opaque, inerte, validé et lié à l'outil, à la requête initiale, à sa position et à la génération. Curseur altéré/étranger : `invalid_cursor` ; génération changée : `stale_cursor`, relancer la requête initiale.
-- L'identité binaire des curseurs entre deux appels n'est pas exigée. Si l'implémentation stocke un état de curseur, sa durée de vie et ses bornes mémoire seront documentées ; un curseur perdu/expiré est refusé explicitement, jamais réinterprété comme une nouvelle requête.
+- Curseur opaque, inerte, validé et lié à l'outil, à la requête initiale, à sa position et à la génération. Curseur altéré/étranger : `invalid_cursor` ; génération changée : `stale_cursor`, relancer la requête initiale. L'identité binaire des curseurs entre deux appels n'est pas exigée.
+- Si l'implémentation stocke un état de curseur, sa durée de vie et ses bornes mémoire seront documentées ; un curseur perdu/expiré est refusé **explicitement** — jamais réinterprété comme une nouvelle requête.
 
-## D9 — Timeout simple, arrêt réel
+## D8 — Recollement exact et encodage
 
-Délai par appel : 5 s par défaut (configurable). Le travail synchrone de lecture/SQLite doit être isolé du serveur HTTP dans une unité dont l'arrêt peut être demandé et observé (worker ou processus, choix justifié et testé sur la pile réelle). Un `Promise.race` seul n'arrête rien ; un `LIMIT` SQL borne les résultats, **pas la durée du calcul**.
+- Le schéma d'implémentation documentera les unités des offsets (caractères ou octets) et l'encodage. Tests de recollement exact : pas de trou, doublon ou caractère Unicode perdu, y compris accents/emoji et coupure par budget global. **Ces tests restent dans le MVP read** (read paginé/fragments) ; ils ne sont pas repoussés avec raw.
+- La spec de continuation (fragments exacts sans caractère perdu) couvre `read`. Une extension future à `raw` héritera de la même exigence de recollement octet par octet (D9).
 
-À expiration : erreur `timeout`, **aucun résultat partiel ni curseur issu du calcul interrompu** ; demande d'arrêt du travail. Le créneau n'est rendu qu'après confirmation de l'arrêt effectif. Pendant cette phase, une saturation continue de donner `busy`. Les résultats tardifs sont ignorés. Si l'arrêt échoue, l'unité reste indisponible et l'incident est signalé : ne pas lancer du travail supplémentaire en prétendant le créneau libre.
+## D9 — Preuves brutes : reporté, notes conservées
 
-La v1 ne promet pas une terminaison instantanée à la milliseconde. Tests : timeout sans payload partiel, arrêt/absence de travail orphelin, maintien du plafond de concurrence pendant l'arrêt, réutilisation après confirmation, comportement avec les appels natifs SQLite. Des plafonds de travail restent utiles, sans servir de preuve de délai maximal.
+`sdig_raw` est **hors MVP ; son ajout reste éventuel et soumis à un nouvel accord**. Le CLI `raw` reste disponible. Les notes de sécurité antérieures sont conservées pour une extension future soumise à accord ; rien de ce qui suit n'est une tâche bloquante du MVP :
+
+- Catalogue fermé par défaut : raw absent, activable explicitement (`expose_raw: true`, journalisé). Aucune continuation ne contourne une désactivation ultérieure.
+- `partId` est une entrée non fiable : validation syntaxique bornée des familles reconnues (identifiants opencode hérités, `pi:<sessionId>:<id local>` qualifié par session), existence dans les références de la vue, fichier dérivé de cette référence uniquement — la validation précède toute dérivation de chemin. Les partIds orphelins pi (exécutions sans `rawRef`) ne sont pas référencés dans la vue : à refuser `invalid_part` dans cette extension, sans parité avec la lecture explicite du CLI. Les caractères admis et longueurs maximales sont épinglés dans le change d'implémentation après confrontation aux fixtures des deux adaptateurs.
+- Résolution confinée à `raw/`, rejet des traversées, chemins absolus, liens symboliques et fichiers spéciaux. Contrôler le chemin canonique, l'ouverture sans suivi du lien final (`O_NOFOLLOW`) et le type du fichier effectivement ouvert ; expliciter les hypothèses sur les répertoires parents et tester les substitutions de fichier. Ne pas prétendre qu'un `realpath` préalable suffit à supprimer les courses.
+- Réponse `unvetted: true` et bornée, y compris en continuation ; fragmentation avec offsets explicites (`head`, `maxBytes` bornent chaque page, pas la quantité totale récupérable) ; recollement sans perte d'octet.
+- Une continuation raw est liée à l'identité du fichier ouvert et du contenu lu ; invérifiable = `stale_cursor`. Une page touchant le marqueur d'ingestion porte l'avertissement du protocole de publication, sans contenu privé ; le snapshot SQLite n'est pas un snapshot des fichiers `raw/`.
 
 ## D10 — Confidentialité et contenu non fiable
 
-Liste autorisée des journaux : nom d'outil, paramètres numériques de limites/fenêtres/offsets, identifiants techniques validés (session/preuve), compteurs connus, durée, code d'erreur. Pas de `query`, filtre libre, curseur, token, texte de message ni sortie brute. Debug `log_content: true` uniquement sur activation explicite annoncée ; jamais de secret d'authentification journalisé.
+Liste autorisée des journaux : nom d'outil, paramètres numériques de limites/fenêtres/offsets, identifiants techniques validés, compteurs connus, durée, code d'erreur. Pas de `query`, filtre libre, curseur, token, texte de message ni sortie brute. Debug `log_content: true` uniquement sur activation explicite annoncée ; jamais de secret d'authentification journalisé.
 
-**Toute lecture peut exposer des secrets**, y compris les messages ordinaires. Aucun filtrage de secrets promis. Désactiver `raw` réduit une surface, mais n'anonymise pas les résultats. Le service ne contacte aucun modèle ; le client peut transmettre ses réponses au fournisseur du modèle appelant. Une limite de taille n'est pas une protection contre la présence d'un secret.
+**Toute lecture peut exposer des secrets**, y compris les messages ordinaires. Aucun filtrage de secrets promis. Le service ne contacte aucun modèle ; le client peut transmettre ses réponses au fournisseur du modèle appelant. Une limite de taille n'est pas une protection contre la présence d'un secret.
 
-Les descriptions des outils rappellent que messages, commandes et sorties sont des **données non fiables**, jamais des instructions à suivre ou à exécuter. Aucun outil du service n'exécute ce contenu.
+Les descriptions des trois outils sont obligatoires dès le MVP. Elles rappellent que le contenu peut inclure des secrets et être transmis au fournisseur du modèle, et que messages, commandes et sorties sont des **données non fiables**, jamais des instructions à suivre ou à exécuter. Aucun outil du service n'exécute ce contenu. L'absence de raw n'anonymise pas les messages ordinaires.
 
 Aucun outil ne lit les fichiers du jeu d'évaluation. Cette fermeture ne garantit pas l'absence, dans l'historique, d'extraits éventuellement copiés auparavant ; le service ne prétend pas les détecter.
 
 ## D11 — Supervision et livraison
 
-Lancement manuel documenté, puis intégration cliente MCP sur fixtures. Ajout au manifeste Termux `~/.config/agora/servers.sh` et activation durable uniquement sur décision propriétaire distincte. Logs sous `~/.agora/log/`. Arrêt propre des unités de travail et des bases, aucune écriture dans le corpus/index/base source, aucun temporaire persistant laissé par le service.
+Lancement manuel documenté, puis validation sur PC (jalon commun). Ajout au manifeste Termux `~/.config/agora/servers.sh` et activation durable uniquement sur décision propriétaire distincte — **hors MVP** ; l'usage validation cible est le PC, pas le téléphone. Aucune dépendance à Agora pour le lancement PC : journaux techniques sur stderr par défaut. Une éventuelle intégration Agora choisira sa destination séparément. Arrêt manuel documenté avec fermeture des connexions et sans travail détaché survivant ; aucune écriture dans le corpus/index/base source, aucun temporaire persistant laissé par le service.
 
 Le change d'implémentation vérifiera le SDK et ses contrats avant installation. Ni code réseau, ni dépendance, ni démarrage ne découlent automatiquement de la validation de cette spec.

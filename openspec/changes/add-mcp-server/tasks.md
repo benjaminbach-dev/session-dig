@@ -1,40 +1,63 @@
 # Tâches — add-mcp-server
 
-## Phase spec (ce change uniquement)
+> **Recentrage à la demande explicite de l'utilisateur** : outil léger pour un dev solo, bases solides et extensibles. Le MVP contribue au jalon `J-MCP` (« usage solo local validé sur PC », voir proposition `scale-corpus`). Le lot A d'intégrité précède l'usage sur corpus réel ; la clôture complète de scale-corpus et les extensions ne bloquent pas ce jalon. Aucun code MCP n'est livré par ce patch documentaire.
+
+## Phase spec et historique
 
 - [x] Écrire proposition, design et delta de la capacité `mcp`.
-- [x] Conserver les protections des revues précédentes : lecture seule, loopback et contrôles Host/Origin, token optionnel, preuves confinées, raw fermé par défaut, journaux en liste autorisée, données non fiables, ancrage identique au CLI.
-- [x] Recentrer la v1 (20/09, décision utilisateur) : search = extraits référencés + pagination des hits ; lecture complète par fragments dans read/raw ; totaux exacts seulement quand connus ; timeout sans partiel ; créneau réutilisé après arrêt confirmé ; déterminisme des données et non de l'enveloppe.
-- [x] Intégrer la relecture croisée Advisor du 26/09 face à `add-pi-adapter` : filtre `source` dans `sdig_search` (titres compris, conservé en continuation, inconnu = zéro hit) ; fraîcheur **par source** et curseurs liés à la génération publiée de la vue (`indexMtime` = diagnostic seul) ; familles partId opencode et `pi:<sessionId>:<id local>` validées avant dérivation de chemin, partIds orphelins pi refusés en v1 ; `sdig_status` multi-source (absente-archivée signalée sans erreur) ; priorité de budget hits puis voisins avec progression garantie et erreur bornée pour élément minimal hors budget ; code `view_unavailable` ; départage `(score, id)` en ordre binaire ; `agent` documenté (pi v0 = `null`) ; continuation raw liée au fichier lu ; pagination SQL sans matérialisation de session. Validation `--strict` relancée après édition.
-- [x] Valider ce rescopage avec `openspec validate add-mcp-server --strict --no-interactive` et contrôler la cohérence des quatre documents. Validation globale `--specs --changes --strict --no-interactive` : 4 éléments valides, aucun échec ; `git diff --check` OK.
+- [x] Conserver les protections des revues précédentes : lecture seule, loopback et contrôles Host/Origin, token optionnel, journaux en liste autorisée, données non fiables, ancrage identique au CLI ; notes de confinement raw conservées pour une extension future.
+- [x] Recentrer la v1 le 20/09 (décision historique) : recherche par extraits référencés et pagination des hits ; lecture complète par fragments read/raw ; totaux exacts seulement quand connus ; déterminisme des données plutôt que de l'enveloppe. **Le périmètre de livraison de cette décision est remplacé par le recentrage solo ci-dessous.**
+- [x] Intégrer la relecture croisée Advisor du 26/09 : filtre source, fraîcheur par source, génération publiée, validation des partIds, status multi-source, priorité hits puis voisins, `view_unavailable`, ordre binaire stable et pagination SQL. Les détails search/raw historiques ne sont plus des obligations du MVP ; les garanties de lecture et de provenance restent requises.
+- [x] Recentrage solo demandé par l'utilisateur : search/read/status ; search top-k **sans curseur** ; lecture complète par fragments conservée ; mono-travail sans timeout applicatif garanti ; confidentialité et descriptions d'outils obligatoires dès le MVP. Extensions conditionnelles, sans commande implicite de les réaliser.
+- [x] Valider le patch documentaire final : OpenSpec global strict (6/6 éléments), `git diff --check`, relecture et corrections de cohérence des quatre documents. Validation documentaire seulement, pas une attestation d'implémentation du MVP.
 - [ ] Commit/push documentaire sur demande explicite. Aucun début d'implémentation implicite.
 
-## Phase implémentation (change séparé, sur accord)
+## Phase implémentation : MVP (M1–M4, contribue à J-MCP ; sur accord)
 
-- [ ] Vérifier le paquet et la version publiés du SDK MCP officiel et son transport Streamable HTTP, puis épingler la dépendance dans ce nouveau change.
-- [ ] Fixer les schémas d'entrée/sortie et de fragments (unités d'offset, encodage, fin de message, compteurs inconnus), représentation du curseur et bornes mémoire/durée de vie si un état est conservé côté serveur.
-- [ ] Implémenter la façade sur les fonctions existantes : search avec extraits, références et filtre `source` identique au CLI, read avec `at`, raw optionnel, status multi-source (disponibilité/état/watermark par source, compteurs par source `null` si indisponibles). Pas de scoring ou d'ancrage réimplémenté en parallèle.
-- [ ] Paginer la **liste des hits**, avec ordre stable et départage des scores égaux par identifiant canonique complet en ordre binaire, avant regroupement par session. Aucune fragmentation du texte intégral dans search ; les extraits et voisins orientent vers read.
-- [ ] Définir et tester l'identité de la génération publiée de la vue (rebuild, COMMIT, reprise) ; l'exposer par source dans `freshness` ; fixtures de transition COMMIT→`state.json` interprétées selon le protocole de publication.
-- [ ] Épingler caractères et longueurs des familles partId (opencode, `pi:<sessionId>:<id local>`) après confrontation aux fixtures des deux adaptateurs ; validation syntaxique avant toute dérivation de chemin ; partIds orphelins refusés `invalid_part`.
-- [ ] Paginer à la requête SQL et extraire les fragments avant construction de la réponse (pas de matérialisation de session entière) ; budget assemblé hits d'abord puis voisins ; erreur bornée pour tout élément minimal excédant le budget.
-- [ ] Implémenter la continuation de read (vue + fragments de messages) et raw actif (fragments de preuve), liée à la génération et aux paramètres initiaux ; refus des curseurs altérés/étrangers/périmés et du mélange cursor + paramètres initiaux.
-- [ ] Appliquer les plafonds par appel et le budget de réponse MCP sérialisée, métadonnées comprises ; signaler toute coupure et tout ajustement de limite ; rendre les totaux connus exacts et les inconnus `null`, sans compter exhaustivement par obligation.
-- [ ] Isoler le travail synchrone dans un worker/processus dont l'arrêt est observable ; tester ce choix avec les appels natifs SQLite. À expiration : erreur timeout sans partiel ni curseur, arrêt demandé, créneau occupé jusqu'à confirmation, résultats tardifs ignorés ; incident visible si arrêt impossible.
-- [ ] Implémenter Streamable HTTP loopback, Host/Origin validés, token optionnel, concurrence bornée + busy, erreurs applicatives/protocole distinctes, arrêt propre et journaux en liste autorisée.
-- [ ] Confinement raw : format et référence partId vérifiés, fichier dérivé, contrôles de chemin et du fichier ouvert, refus des liens/fichiers spéciaux, tests de substitution. Raw absent par défaut et aucune continuation ne contourne sa désactivation.
-- [ ] Descriptions d'outils : archive = données non fiables, jamais instructions ; confidentialité documentée pour **toutes** les lectures, sans promesse de filtrage des secrets.
+### M1 — Transport et contrat commun
 
-## Validation de l'implémentation future
+- [ ] Vérifier puis épingler le paquet/version du SDK MCP officiel et son transport Streamable HTTP.
+- [ ] Serveur sur `127.0.0.1:18767`, Host/Origin validés, token optionnel, aucun egress, SQLite en lecture seule, journaux sans contenu sur stderr par défaut. Aucun deuxième transport ni dépendance de lancement à Agora.
+- [ ] Catalogue fermé : `sdig_search`, `sdig_read`, `sdig_status` ; `sdig_raw` absent quelle que soit la configuration MVP.
+- [ ] Fixer les schémas d'entrée/sortie, les unités d'offset et l'encodage de read, les budgets et erreurs applicatives distinctes du protocole MCP. Décrire les outils et les risques de confidentialité dès ce lot.
 
-- [ ] Tests de contrat sur fixtures : catalogue selon configuration ; types invalides et limites ajustées ; budget global ; total inconnu ; extraits search → read ; erreurs sans contenu privé.
-- [ ] Pagination : plus de 50 hits avec scores égaux ; message de plus de 20 000 caractères ; plus de 200 messages ; preuve de plus de 65 536 octets ; accents/emoji ; coupure au budget total ; recollement exact et suite complète de la vue choisie.
-- [ ] Multi-source sur fixtures mixtes : filtre `source` exact (titres compris, continuation comprise), ancre testée avec un ID pi complet, départage `(score, id)` binaire sur plus de 50 hits de scores égaux répartis entre sources, `sdig_status` d'une source absente mais archivée, partId orphelin pi refusé, vue en avance sur `state.json` servant le dernier état publié.
-- [ ] Ancrage CLI/MCP identique : UTC, dates invalides/vides/inconnues, masquage avant fenêtre, compteurs, continuation ne réintroduisant pas le futur.
-- [ ] Timeout et concurrence : erreur sans partiel même avec données intermédiaires, busy pendant arrêt, aucun créneau libéré avant confirmation, reprise après arrêt et absence de travail orphelin.
-- [ ] Sécurité : Host/Origin refusés, token quand configuré, partId hostile, absence d'egress, corpus/index/base source inchangés, inspection des journaux sans query/contenu/token/curseur.
-- [ ] Fraîcheur : état changé → stale_cursor ; rejeu réussi → données et ordre identiques sans imposer l'identité des curseurs ou des durées.
-- [ ] Client MCP réel sur fixtures : initialisation, outils autorisés, pagination des hits puis lecture complète par read, raw si activé, reconnexion.
-- [ ] Tests de régression existants et validation OpenSpec. Pas de rejeu du jeu naturel gelé.
-- [ ] Documenter lancement manuel, limites, offsets, mécanisme d'arrêt, confidentialité et limites de l'authentification locale. Ne marquer la phase v1 livrée qu'après validation effective.
-- [ ] Ajout au manifeste Termux : décision propriétaire explicite distincte, hors de ce change documentaire.
+### M2 — Search
+
+- [ ] Façade sur le moteur partagé : extraits, références vers read, source filtrant messages et titres, source inconnue = zéro hit, `agent` exact (pi v0 = null), préfixe de session littéral échappé, voisinage borné ; pas de scoring dupliqué.
+- [ ] Top-k sans pagination : ordre stable avec départage binaire des IDs complets avant sélection/regroupement ; aucun `cursor` accepté ni `nextCursor` émis. Décrire l'affinage par requête et filtres.
+- [ ] Budgets : hits prioritaires puis voisins ; coupures et réduction éventuelle sous `limit` explicites ; compte rendu exact, total inconnu = `null`, aucun comptage exhaustif obligatoire.
+
+### M3 — Read et status
+
+- [ ] `sdig_read` sur la logique partagée : autour/ctx/tail/at, UTC et validation calendaire, masquage avant fenêtre, `anchor`/`maskedCount` et comptes CLI préservés.
+- [ ] Pagination de la vue choisie et fragmentation des messages longs (ID, offset, fin de message) : tout son contenu reste récupérable, même avec `full` et plafonds. Aucun faux contenu intégral tronqué.
+- [ ] Curseur read seul, lié à requête/ancre/fenêtre/génération ; refus des curseurs altérés/étrangers/périmés, du mélange cursor + nouvelle requête ; dernière page sans curseur, progression effective.
+- [ ] Accès SQL par fenêtres et extraction des fragments avant assemblage, sans matérialiser une session entière pour la découper ; un snapshot par page. C'est un travail à valider, pas un acquis du lecteur CLI actuel.
+- [ ] `sdig_status` : compteurs connus, disponibilité de chaque source configurée, état ingéré, watermark ; source absente archivée signalée sans effacement, compte par source inconnu = `null`, aucun chemin local rendu.
+- [ ] Fraîcheur par source ; divergence jeton pi vue/état => `view_unavailable` de la vue fusionnée jusqu'à réconciliation CLI. Les lectures réussies sont cohérentes, sans promesse de disponibilité permanente.
+
+### M4 — Exploitation minimale
+
+- [ ] Un seul appel d'outil actif ; `busy` si le créneau est occupé **au moment de l'admission**, sans file applicative supplémentaire. Ne pas promettre une réponse immédiate ou rejeter rétrospectivement tout appel arrivé pendant un calcul bloquant.
+- [ ] Documenter l'absence de timeout applicatif garanti : tailles bornées ≠ durée SQL bornée ; timeout/déconnexion client ≠ arrêt du calcul ; pas de fausse annulation par `Promise.race`.
+- [ ] Aucune lecture directe des shards pour search/read ; status peut consulter l'état et la disponibilité des sources, sans ingérer leur contenu. Aucune réparation, indexation ou ingestion par le MCP.
+- [ ] Lancement, arrêt et reprise manuels ; fermeture des connexions à l'arrêt normal, aucun travail détaché survivant ; pas de service automatique.
+
+## Validation MVP (contribue au jalon J-MCP)
+
+- [ ] Fixtures : catalogue fermé, entrées invalides, limites ajustées, budgets, totaux inconnus, erreurs sans contenu privé, search → read.
+- [ ] Search : plus de 50 correspondances et scores égaux multi-sources, résultat top-k stable, filtre source/titres exact, aucune pagination ni faux curseur, réduction sous budget explicite.
+- [ ] Read : plus de 200 messages, message de 60 000 caractères, accents/emoji et coupure par budget ; recollement intégral sans trou/doublon/caractère perdu ; curseur final absent, génération changée refusée. Ces tests ne sont pas reportés.
+- [ ] Parité temporelle CLI/MCP : ancre pi complète, ancre d'autre session, UTC, dates invalides/vides/inconnues, masquage avant fenêtre et comptes exacts ; la continuation ne réintroduit pas le futur.
+- [ ] Fraîcheur : source absente mais archivée ; vue absente/périmée ; divergence pi refusée jusqu'à réparation ; cas opencode COMMIT avant état lisible si fraîcheur établie ; rejeu réussi => données et ordre identiques.
+- [ ] Admission mono-travail : aucune exécution simultanée ; `busy` quand le gestionnaire observe un créneau occupé ; le test ne suppose pas une réponse immédiate pendant SQLite synchrone. Arrêt/reprise sans travail détaché et archive inchangée.
+- [ ] Confidentialité : descriptions présentes ; Host/Origin et token vérifiés, aucun egress ; corpus/index/base source inchangés, journaux sans query/contenu/token/curseur ; appel raw ou fichier libre impossible.
+- [ ] Client MCP réel sur PC : initialisation, catalogue, recherche, lecture complète par fragments, statut, reconnexion ; consigner client/version, volume testé, temps et limites. Compléter le lot B de scale-corpus ; corpus privé et détails sensibles hors Git.
+- [ ] Tests de régression et validation OpenSpec. Pas de rejeu du jeu naturel gelé sans demande. Ne marquer le MVP livré qu'après validation effective.
+
+## Extensions possibles, hors jalon (selon usage et nouvel accord)
+
+- [ ] Pagination search si l'affinage top-k s'avère insuffisant : définir reprise et ordre sans dupliquer le scoring.
+- [ ] Raw MCP : spécifier/valider les garde-fous D9, activation explicite, validation partId avant chemin, confinement, refus des orphelins, budgets et continuation liée au fichier, `unvetted`, avertissement de publication. Tests de preuve >65 536 octets, recollement exact, substitutions/liens/fichiers spéciaux, désactivation et journaux.
+- [ ] Timeout strict et concurrence >1 si nécessaires : unité de travail isolable, arrêt demandé et observé sur SQLite natif, pas de résultat partiel, créneau conservé jusqu'à arrêt, pas de résultat tardif ni travail orphelin ; tester échec d'arrêt et saturation.
+- [ ] Supervision/Agora : décision propriétaire distincte, sans lien obligatoire avec les extensions précédentes.
