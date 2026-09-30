@@ -36,43 +36,58 @@ const evSort = (a, b) => {
 }
 
 // ── Verrou consultatif contre ingestions concurrentes (passe corrective 20/09, revue).
-// Création exclusive + reprise sur ESRCH uniquement. L'âge ne prouve pas la mort
-// du propriétaire. Ce mécanisme n'est PAS un flock : courses de reprise simultanée,
-// verrou illisible et recyclage de PID restent à durcir (voir tasks.md).
+// Création exclusive (`wx` = O_CREAT|O_EXCL) : l'acquisition est atomique. La reprise
+// AUTOMATIQUE d'un verrou périmé a été RETIRÉE (revue A1) : lire le PID puis retirer
+// le fichier n'est pas atomique vis-à-vis des autres repreneurs — un repreneur pouvait
+// supprimer le verrou tout neuf d'un propriétaire vivant. Un verrou ambigu (périmé ou
+// non) est donc REFUSÉ conservativement. Le retrait manuel éventuel n'est légitime
+// qu'après arrêt coordonné de TOUS les utilisateurs du corpus — jamais sous concurrence.
+// Ce mécanisme n'est PAS un flock : toutes ses garanties sont un effort COOPÉRATIF
+// (best effort), sans atomicité face à un retrait externe du fichier ; le recyclage de
+// PID reste un risque résiduel, documenté, jamais présenté comme sûr.
 export class CorpusLock {
   constructor (lockPath) { this.path = lockPath; this.fd = null }
   acquire () {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        this.fd = fs.openSync(this.path, 'wx')
-        fs.writeSync(this.fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + '\n')
-        return true
-      } catch {
-        // Ne reprendre que si le système confirme la disparition du propriétaire.
-        let stale = false
-        try {
-          const info = JSON.parse(fs.readFileSync(this.path, 'utf8'))
-          if (typeof info.pid === 'number' && info.pid > 0 && info.pid !== process.pid) {
-            try { process.kill(info.pid, 0) } catch (e) { stale = e.code === 'ESRCH' }
-          }
-        } catch { /* illisible : refus conservateur */ }
-        if (stale) {
-          try { fs.rmSync(this.path, { force: true }) } catch {}
-          continue // retenter la création
-        }
-        this.fd = null
-        return false
-      }
+    if (this.fd != null) return true // best effort : déjà détenu par cette instance (un retrait externe peut avoir orphelinisé le fd ; aucune atomicité n'est promise)
+    let fd
+    try {
+      fd = fs.openSync(this.path, 'wx') // atomique : un seul créateur possible
+    } catch {
+      // EEXIST (verrou pris, vide, illisible, ou répertoire) ou toute autre erreur
+      // d'ouverture : refus conservateur, sans jamais toucher au fichier d'autrui.
+      this.fd = null
+      return false
     }
-    this.fd = null
-    return false
-  }
-  release () {
-    if (this.fd != null) {
-      try { fs.closeSync(this.fd) } catch {}
+    try {
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + '\n')
+    } catch (e) {
+      // Échec APRÈS création : nettoyage best effort. À cet instant nous étions le
+      // créateur exclusif, mais la fermeture puis le retrait ne sont pas atomiques
+      // face à un retrait externe + réacquisition : cette voie suppose des acteurs
+      // coopératifs. On propage l'erreur sans laisser de descripteur ni de fichier.
+      try { fs.closeSync(fd) } catch {}
       try { fs.rmSync(this.path, { force: true }) } catch {}
       this.fd = null
+      throw e
     }
+    this.fd = fd
+    return true
+  }
+  release () {
+    if (this.fd == null) return
+    // Best effort coopératif : ne retirer le fichier que s'il est encore le nôtre
+    // ((dev, ino) comparés au descripteur). Ce n'est PAS atomique : entre le stat et
+    // le rm, un retrait externe suivi d'une réacquisition par un acteur non
+    // coopératif peut encore se glisser. Aucune garantie absolue n'est promise.
+    let own = false
+    try {
+      const fdStat = fs.fstatSync(this.fd)
+      const pathStat = fs.statSync(this.path)
+      own = fdStat.dev === pathStat.dev && fdStat.ino === pathStat.ino
+    } catch { own = false }
+    try { fs.closeSync(this.fd) } catch {}
+    this.fd = null
+    if (own) { try { fs.rmSync(this.path, { force: true }) } catch {} }
   }
 }
 
@@ -102,7 +117,7 @@ export function recover (root = corpusPaths().root) {
   }
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
-    throw new Error('une opération corpus est déjà en cours (verrou consultatif) — réessayer une fois terminée')
+    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
     const st = readState(paths.state)
@@ -164,7 +179,7 @@ export async function ingest (opts = {}) {
 
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
-    throw new Error('une ingestion est déjà en cours sur ce corpus (verrou consultatif) — réessayer une fois la première terminée')
+    throw new Error(`une ingestion est déjà en cours sur ce corpus (verrou consultatif ${paths.lock}) — réessayer une fois la première terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
     return await _ingest(root, paths, dbPath, piPath, opts)
@@ -703,7 +718,7 @@ export async function migrate (root = corpusPaths().root) {
   }
 
   const lock = new CorpusLock(paths.lock)
-  if (!lock.acquire()) throw new Error('une opération corpus est déjà en cours — réessayer plus tard')
+  if (!lock.acquire()) throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer plus tard. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   try {
     fs.writeFileSync(paths.marker, JSON.stringify({ startedAt: new Date().toISOString(), pid: process.pid, op: 'migrate' }) + '\n')
 
