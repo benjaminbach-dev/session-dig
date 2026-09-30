@@ -2,6 +2,33 @@
 import { fmtTs, fmtCost } from './util.js'
 import { mergeWindows } from './read.js'
 
+// ── Signal de fidélité pi (complément add-pi-adapter) ──
+// Propriété GÉNÉRALE de l'adaptateur pi, dérivée de la provenance DÉJÀ
+// disponible (champ `source` des sessions/événements/hits) : ni relecture de la
+// source, ni détection d'une branche ou d'une édition dans la session rendue,
+// ni nouveau champ canonique. Les deux limites sont exposées telles quelles pour
+// le terminal et pour la machine (`fidelity` en JSON).
+export const PI_FIDELITY_LIMITS = Object.freeze([
+  'branches aplaties par ordre temporel',
+  'éditions context_edit non appliquées'
+])
+export const PI_FIDELITY_NOTE = "limite générale de l'adaptateur pi — ni --at ni l'ordre temporel ne restituent la branche retenue ou le contexte effectif"
+
+/** Métadonnée structurée de réponse (JSON) associée à la source pi. */
+export function piFidelityNotice () {
+  return { source: 'pi', general: true, limits: PI_FIDELITY_LIMITS, note: PI_FIDELITY_NOTE }
+}
+
+/** Avertissement terminal (visible, borné) associé à la source pi. */
+export function piFidelityWarning () {
+  return `⚠ fidélité pi : ${PI_FIDELITY_LIMITS.join(' et ')} — ${PI_FIDELITY_NOTE}`
+}
+
+/** Un élément rendu provient-il de la source pi ? (provenance déjà disponible) */
+function isPiSource (x) {
+  return (x?.source ?? null) === 'pi'
+}
+
 export function groupBySession (hits) {
   const groups = []
   const bySession = new Map()
@@ -116,6 +143,9 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
   const groups = groupBySession(hits)
   const lines = []
   const hitById = new Map(hits.map(h => [h.id, h]))
+  // complément add-pi-adapter : signal émis si et seulement si une donnée pi
+  // (hit, titre ou voisin) est effectivement rendue dans CETTE réponse.
+  let piRendered = false
 
   for (const g of groups) {
     const ses = sessionsById.get(g.sessionId)
@@ -123,6 +153,7 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
     // (l'espace opencode, hérité et majoritaire, reste non marqué) ; la source
     // vient des métadonnées de session, repli sur le hit.
     const source = ses?.source ?? g.hits.find(h => h.source)?.source
+    if (source === 'pi') piRendered = true
     const tag = source === 'pi' ? ' · pi' : ''
     const head = ses
       ? `── ${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}${tag}`
@@ -132,6 +163,7 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
     const win = ctx > 0 && ctxBySession ? ctxBySession.get(g.sessionId) : null
     const evs = win ? win.evs : (ctx > 0 && eventsBySession ? eventsBySession.get(g.sessionId) : null)
     if (evs) {
+      for (const e of evs) if (isPiSource(e)) piRendered = true
       if (win) {
         // Fenêtre DENSE (passe corrective 20/09) : voisins ±ctx par CLÉ autour de
         // chaque hit, rangs absolus connus (absIdx) — marqueurs d'écart exacts,
@@ -163,6 +195,7 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
       }
     } else {
       for (const h of g.hits) {
+        if (isPiSource(h)) piRendered = true
         const meta = `\x1b[2m${fmtTs(h.ts)} ${h.role}${h.model ? ` ${h.model}` : ''}${h.agent ? ` (${h.agent})` : ''}\x1b[0m`
         lines.push(`  ${meta}`)
         if (full || chars != null) {
@@ -186,6 +219,7 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
     lines.push('')
   }
   lines.push(`\x1b[2m${hits.length} hit(s), ${groups.length} session(s)\x1b[0m`)
+  if (piRendered) lines.push(piFidelityWarning())
   return lines.join('\n')
 }
 
@@ -209,6 +243,9 @@ export function renderRead (slice, sessionId, opts = {}) {
   L.push(`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${slice.total ?? evs.length} messages${anchor ? ` (${last + 1} visibles)` : ''}\x1b[0m`)
   if (anchor) L.push(`${dim}ancre : ${anchor.id ? `${anchor.id} ` : ''}(${anchor.date}) — lecture bornée à cet instant, ancre incluse${reset}`)
   if (error) L.push(`${dim}${error}${reset}`)
+  // complément add-pi-adapter : session pi CONNUE, même vide à l'ancre — le
+  // signal reste porté (propriété de l'adaptateur, pas de la branche rendue).
+  if (isPiSource(ses)) L.push(piFidelityWarning())
   for (const [a, b] of spans) {
     if (a > 0) L.push('  ⋯')
     for (let i = a; i <= b; i++) {
@@ -241,6 +278,9 @@ export function renderReadJson (slice, sessionId) {
     visible: Math.max(0, last + 1),
     total: slice.total ?? evs.length,
     error: error ?? undefined,
+    // complément add-pi-adapter : métadonnée structurée ADDITIVE (objet de
+    // lecture) ; absente pour toute source non pi.
+    ...(isPiSource(ses) ? { fidelity: piFidelityNotice() } : {}),
     messages: idxs.map(i => {
       const e = evById.get(idOfIndex(slice, i)) || evs[idxs.indexOf(i)]
       if (!e) return null
@@ -285,6 +325,9 @@ export function renderJson (hits) {
     date: fmtTs(h.ts),
     role: h.role,
     source: h.source ?? 'opencode', // add-pi-adapter : provenance par hit (D1)
+    // complément add-pi-adapter : le tableau de recherche reste un TABLEAU ; la
+    // métadonnée est additive PAR PROVENANCE (aucune attribution à opencode).
+    ...((h.source ?? 'opencode') === 'pi' ? { fidelity: piFidelityNotice() } : {}),
     agent: h.agent,
     repo: h.repo,
     model: h.model,

@@ -24,6 +24,14 @@
 - [x] Sorties non référencées / exécutions orphelines (D5) : comptées et signalées avec leur partId dans la sortie d'ingestion, jamais de `rawRef` inventé ; lisible par `sdig raw` explicite, hors du scan `--raw` (couverture = preuves référencées).
 - [x] Le cœur ne lit toujours aucune source directement : vérifier qu'aucun import de l'adaptateur pi n'existe hors de la boucle d'ingestion.
 
+## Complément ciblé — fidélité visible (spec ajoutée, code implémenté)
+
+Les validations cochées ci-dessous restent historiques ; elles ne couvrent pas ce complément. Il ne rouvre ni le mapping livré ni une reconstruction des branches.
+
+- [x] Rendre le signal général de limites pi dans recherche (hit/voisin/titre pi) et lecture d'une session pi connue, même vide à l'ancre : branches aplaties et `context_edit` non appliqué ; terminal visible, JSON structuré valide sans texte parasite, association à la seule source pi. Aucune lecture de source ni changement du corpus/index requis.
+- [x] Fixtures synthétiques : recherche mixte, titre pi seul, lecture pi avec/sans ancre et vide, recherche opencode-only/sans résultat et session inconnue ; assertions sur présence/absence du signal, comptes et contenu inchangés. Le signal ne prétend pas détecter les branches/éditions d'une session.
+- [ ] Vérifier la reprise du contrat dans le MVP MCP (`add-mcp-server`) ; pas d'implémentation MCP implicite, pas de rejeu du jeu naturel gelé.
+
 ## Validation de l'implémentation
 
 - [x] Suite contractuelle rejouée avec fixtures pi synthétiques (mapping/parcours pi couverts par `pi-adapter`/`multi-source`/`cli-source` ; `contract.test.js` lui-même reste opencode-only — précision de la repasse globale) (générateur commité, aucun extrait réel) : scénario « nouvel adaptateur » de la spec corpus.

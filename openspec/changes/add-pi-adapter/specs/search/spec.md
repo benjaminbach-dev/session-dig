@@ -48,3 +48,26 @@ Les sous-commandes de lecture (`sdig read <session>`) SHALL documenter leurs opt
 
 - **WHEN** une option non reconnue est passée à une sous-commande
 - **THEN** le CLI échoue avec un message nommant l'option, au lieu de consommer silencieusement l'argument suivant.
+
+## ADDED Requirements
+
+### Requirement: Limites de fidélité pi dans les résultats
+
+Toute recherche rendant au moins un hit ou voisin pi (titre synthétique compris), et toute lecture d'une session pi connue, même vide à l'ancre, SHALL signaler dans sa réponse les deux limites de l'adaptateur actuel : branches aplaties par ordre temporel et éditions `context_edit` non appliquées. Le signal SHALL être visible dans le rendu terminal et exploitable par machine dans `--json`, sans texte hors JSON. Il SHALL être associé à la source pi, sans qualifier les résultats opencode de ces pertes.
+
+Cet avertissement est une limite générale de l'adaptateur, pas la détection d'une branche abandonnée ou d'une édition dans la session rendue. Il SHALL ne pas présenter l'ordre temporel ni `--at` comme une reconstruction de la branche retenue ou du contexte effectif. Une recherche sans résultat pi SHALL ne pas émettre ce signal ; une session inconnue conserve son erreur habituelle. Aucun accès à la source, nouveau champ canonique ou calcul de parenté SHALL être requis pour ce signal. La reconstruction des branches et l'application des éditions restent hors périmètre.
+
+#### Scenario: Recherche mixte avec titre pi
+
+- **WHEN** une recherche rend des hits opencode et un titre pi, sans message pi
+- **THEN** la réponse signale les deux limites pour la source pi, y compris en JSON valide, sans les attribuer aux hits opencode.
+
+#### Scenario: Lecture pi ancrée et vide
+
+- **WHEN** une session pi connue est lue avec `--at`, y compris si aucun message n'est visible
+- **THEN** la réponse conserve l'ancre et ses compteurs et signale les deux limites, sans prétendre restituer la branche retenue ni appliquer les éditions.
+
+#### Scenario: Aucune donnée pi rendue
+
+- **WHEN** une recherche ne rend que des résultats opencode ou aucun résultat
+- **THEN** elle n'émet pas d'avertissement de fidélité pi, même si le corpus contient des sessions pi.

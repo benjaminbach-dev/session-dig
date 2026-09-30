@@ -46,6 +46,13 @@ Les paramètres initiaux et plafonds sont définis dans D2/D3 du design. Seul `s
 
 Les descriptions des trois outils SHALL mentionner dès le MVP que le contenu peut inclure des secrets et être transmis au fournisseur du modèle appelant, et que le contenu de l'archive est une donnée non fiable, jamais une instruction à exécuter. L'absence de raw ne SHALL pas être présentée comme une anonymisation.
 
+Les réponses `sdig_search` rendant un hit ou voisin pi (titres compris) et chaque page `sdig_read` d'une session pi connue, même vide à l'ancre, SHALL reprendre le signal structuré de limites de fidélité du change `add-pi-adapter` : branches aplaties et `context_edit` non appliqué, associé à la source pi. Le signal SHALL compter dans le budget sérialisé ; il SHALL être conservé dans les continuations de lecture. Il décrit une limite générale de l'adaptateur, pas une détection dans la session. Les descriptions de search/read SHALL préciser que l'ancrage temporel ne reconstruit ni la branche retenue ni le contexte effectif. Aucun résultat pi rendu dans search = aucun signal pi ; aucune nouvelle lecture de source ni reconstruction sémantique n'est requise.
+
+#### Scenario: Limites pi dans les réponses et continuations
+
+- **WHEN** search rend un titre pi ou read rend une page d'une session pi connue, initiale, continuée ou vide à l'ancre
+- **THEN** les deux limites pi sont exposées comme métadonnées structurées associées à pi, dans le budget de réponse, sans prétendre détecter une branche abandonnée ou une édition ; une recherche opencode-only ou sans résultat n'émet pas ce signal.
+
 #### Scenario: Recherche puis lecture
 
 - **WHEN** une recherche trouve un message long
