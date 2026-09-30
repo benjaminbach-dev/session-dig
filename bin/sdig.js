@@ -325,8 +325,15 @@ async function main () {
     if (!slice) fail(`session inconnue : ${sessionId} (préfixe accepté dans sdig --session, pas ici — id complet requis)`)
     // Ancre invalide : erreur explicite, sortie non nulle, aucune sortie partielle trompeuse.
     if (slice.fatal) fail(slice.error, 2)
+    // Avertissement de publication (marqueur d'ingestion non réconcilié : une preuve
+    // peut être en avance sur la vue) : en terminal il reste sur stdout, jamais perdu.
+    // En --json, stdout SHALL rester UN document JSON valide — l'avertissement part
+    // sur stderr (toujours visible), il n'est ni supprimé ni préfixé au JSON.
     const warn = proofWarning(paths.root)
-    if (warn) console.log(warn)
+    if (warn) {
+      if (flags.json) console.error(warn)
+      else console.log(warn)
+    }
     if (flags.json) { console.log(renderReadJson(slice, sessionId)); return }
     console.log(renderRead(slice, sessionId, { full: !!flags.full, chars, plain: !!flags.plain }))
     return
