@@ -3,6 +3,7 @@
 import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 
 export const T0 = Date.UTC(2026, 5, 10, 10, 0, 0) // 2026-06-10
 
@@ -60,7 +61,7 @@ export function buildFixtureDb (dbPath) {
   part('prt_u2', 'msg_u2', 'ses_fix2', T0 + 86401000, { type: 'text', text: 'propose une palette lila inspirée de chutes.ai pour le thème sombre du site' })
 
   // ── Session 3 : directory = home → repo null ──
-  insSes.run('ses_fix3', 'ses_fix1', '/root', 'Sous-agent setup', T0 + 172800000, T0 + 173000000, 0, 100, 20, 0)
+  insSes.run('ses_fix3', 'ses_fix1', os.homedir(), 'Sous-agent setup', T0 + 172800000, T0 + 173000000, 0, 100, 20, 0)
   msg('msg_u3', 'ses_fix3', T0 + 172801000, { role: 'user', agent: 'explore', model: { providerID: 'opencode', modelID: 'big-pickle' } })
   part('prt_u3', 'msg_u3', 'ses_fix3', T0 + 172801000, { type: 'text', text: 'setup termux debian proot' })
 
