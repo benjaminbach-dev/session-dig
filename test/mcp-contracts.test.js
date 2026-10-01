@@ -275,12 +275,13 @@ test('client MCP réel : callTool search/read valide des sorties synthétiques (
   }
 })
 
-test('client MCP réel : erreur applicative isError NON invalidée par outputSchema', async () => {
+test('client MCP réel : erreur applicative isError sans structuredContent (jamais invalidée par outputSchema)', async () => {
   const { client, server } = await connectedStubServer(() => async () => toToolErrorResult(new McpAppError('invalid_params')))
   try {
     const res = await client.callTool({ name: 'sdig_search', arguments: { query: 'ok' } })
     assert.equal(res.isError, true)
-    assert.deepEqual(res.structuredContent, { code: 'invalid_params', message: APP_ERROR_MESSAGES.invalid_params })
+    assert.equal(res.structuredContent, undefined)
+    assert.deepEqual(JSON.parse(res.content[0].text), { code: 'invalid_params', message: APP_ERROR_MESSAGES.invalid_params })
   } finally {
     await client.close()
     await server.close()
@@ -427,7 +428,9 @@ test('appErrorPayload : code muté hors liste fermée => internal, jamais le sec
   const err = new McpAppError('invalid_params')
   err.code = SECRET
   assert.deepEqual(appErrorPayload(err), { code: 'internal', message: APP_ERROR_MESSAGES.internal })
-  assert.ok(!JSON.stringify(toToolErrorResult(err)).includes(SECRET))
+  const serialized = JSON.stringify(toToolErrorResult(err))
+  assert.ok(!serialized.includes(SECRET))
+  assert.equal(toToolErrorResult(err).structuredContent, undefined)
 })
 
 test('les erreurs de validation ne citent que des noms de champs fermés', () => {

@@ -23,6 +23,18 @@
 > - [x] Sorties décrites comme contrat MCP (hits typés message/titre, référence read obligatoire, voisins séparés, groupement, `topK`/`count`, `total` inconnu `null`, `nextCursor` refusé sur search), fragments read `offset`/`end`/`complete` au contrat (unités points de code Unicode, `end` exclu, UTF-8), `freshness` dans chaque réponse (`indexMtime` fini fractionnaire, `corpusVersion` entier de schéma), compteurs par source `null` si inconnus, fidélité pi aux valeurs exactes du format commun.
 > - [x] Descriptions des trois outils (secrets/fournisseur du modèle, contenu non fiable jamais exécuté, top-k sans curseur) ; erreurs applicatives à messages figés par code ; budget d'enveloppe 524 288 octets UTF-8.
 > - [ ] Fragmentation read (implémentation, tests de recollement) et validation authentifiée du curseur read : **M3, non livrés**.
+>
+> **Lot M1b livré le 01/10/2026 — transport HTTP, garde-fous, admission (M1 toujours partiel).**
+>
+> - [x] Fabrique serveur Streamable HTTP stateless sur le SDK officiel (`src/mcp/server.js`) : handlers métier **injectés et requis** (exactement les 3), aucun repli factice ; port production `127.0.0.1:18767` refusant toute autre adresse/port ; primitive de test éphémère sur `127.0.0.1`.
+> - [x] Garde-fous : `Host`/`Origin` en syntaxe **brute** (loopback exact, port d'écoute sans zéro de tête, pas de chemin/%2e/`\`/127.1/port 0/65536, en-têtes dupliqués refusés), jeton Bearer optionnel configuré strictement (absent/null = désactivé ; `''`/espaces/type non-chaîne/trop long refusés au constructeur ; SHA-256 + `timingSafeEqual`), corps borné 256 Kio, en-têtes 16 Kio, aucun egress ni écriture corpus.
+> - [x] Anti-fuite SDK : entête `mcp-protocol-version` prévalidée, identifiant JSON-RPC borné, paramètres connus malformés → `-32602` générique, toute réponse d'erreur SDK sanitizée (code/message fermés, `data` retiré) ; validation M1a avant handler ; budget d'enveloppe 524 288 octets (`content` toujours présent).
+> - [x] Admission mono-travail server-global (bloquée dès la fermeture, avant et après lecture du corps, `busy` sans file, créneau tenu malgré déconnexion) et `close()` qui annule les corps incomplets, attend le handler actif **et la réponse en cours**, puis `dispose` (échec propagé, idempotent) ; `close` avant `start` cohérent, `start` après `close` refusé.
+> - [x] Route fixe `/mcp` (toute autre route → 404) ; tests sur stubs synthétiques, port OS éphémère, **sans lier le port de production 18767**.
+> - [ ] Serveur de production lancé sur le corpus réel avec SQLite en lecture seule : **non livré** (handlers métier et accès données = lots suivants).
+> - [ ] Commande CLI `sdig mcp` / bin autonome : **non livrée** ; jalon PC jamais coché.
+>
+> **Validation parent M1b (01/10/2026)** : `npm test` **339/339**, OpenSpec et `git diff --check` OK, vérifications adversariales (en-têtes Host/Origin/version sentinelles, identifiants 200 k, params/initialize invalides) — erreurs 73-79 octets sans écho. Client MCP HTTP officiel exercé en **local éphémère** ; ce n'est pas une validation PC du jalon.
 
 - [ ] Vérifier puis épingler le paquet/version du SDK MCP officiel et son transport Streamable HTTP.
 - [ ] Serveur sur `127.0.0.1:18767`, Host/Origin validés, token optionnel, aucun egress, SQLite en lecture seule, journaux sans contenu sur stderr par défaut. Aucun deuxième transport ni dépendance de lancement à Agora.

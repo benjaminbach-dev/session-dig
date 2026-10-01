@@ -1,14 +1,14 @@
 // Erreurs applicatives du contrat MCP (lot M1a).
 //
-// Les erreurs de PROTOCOLE MCP (arguments hors schéma) restent produites par le
-// SDK et distinctes. Les erreurs APPLICATIVES ci-dessous portent un code stable ;
-// leur représentation sérialisée utilise une liste fermée de messages par code.
+// Les erreurs de PROTOCOLE MCP (arguments hors schéma) restent distinctes. Le
+// transport M1b n'emprunte pas la validation Zod du SDK pour `tools/call` : c'est
+// la couche applicative (validateurs M1a) qui produit `invalid_params`, et la
+// représentation sérialisée utilise une liste fermée de messages par code.
 //
-// Aucune sortie ne doit dépendre du `message` libre d'une exception : une future
-// conversion de ces erreurs en résultat d'outil (M1b) devra passer par
-// `appErrorPayload`. Les erreurs de protocole du SDK, elles, peuvent recopier des
-// clés inconnues ; leur sanitisation est une obligation de M1b, pas un acquis de
-// Zod strict.
+// Aucune sortie ne doit dépendre du `message` libre d'une exception : la
+// conversion en résultat d'outil passe par `appErrorPayload`, et le résultat
+// d'erreur ne porte PAS de `structuredContent` (un client officiel le validerait
+// contre le schéma de sortie).
 
 /** Codes applicatifs stables du MVP (D6). Aucun `timeout` ni `invalid_part`. */
 export const APP_ERROR_CODES = Object.freeze([
@@ -67,14 +67,15 @@ export function appErrorPayload (err) {
 }
 
 /**
- * Enveloppe d'erreur d'outil MCP (préparation M1b) : `isError` + charge bornée.
- * Le message libre d'une exception n'est jamais recopié.
+ * Enveloppe d'erreur d'outil MCP (transport M1b) : `isError` + charge bornée.
+ * AUCUN `structuredContent` : un client officiel qui a mis en cache le schéma de
+ * sortie validerait ce contenu et refuserait l'erreur. Le code applicatif reste
+ * lisible dans le texte.
  */
 export function toToolErrorResult (err) {
   const payload = appErrorPayload(err)
   return {
     isError: true,
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
-    structuredContent: payload
+    content: [{ type: 'text', text: JSON.stringify(payload) }]
   }
 }

@@ -10,6 +10,9 @@ export * from './constants.js'
 export * from './errors.js'
 export * from './budget.js'
 export * from './schemas.js'
+export * from './guards.js'
+export * from './admission.js'
+export * from './server.js'
 export { parseStrict, clampCeiling, validateSearchInput, validateReadInput, validateStatusInput } from './validate.js'
 
 /** Plan de configuration (sans handler) pour le SDK officiel. */

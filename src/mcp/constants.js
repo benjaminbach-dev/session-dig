@@ -41,5 +41,21 @@ export const MAX_BOUND_CHARS = 64
 // (liaison outil/requête/génération) relève de M3 et n'est pas livrée ici.
 export const MAX_CURSOR_CHARS = 2048
 
+// ── Transport HTTP (lot M1b) ──
+/** Route unique du service (toute autre route est refusée). */
+export const MCP_ROUTE = '/mcp'
+/** Plafond du corps de requête lu avant toute analyse (600 k octets refusés). */
+export const MAX_BODY_BYTES = 262144
+/** Plafond d'en-têtes HTTP (au-delà, Node répond 431 sans écho). */
+export const MAX_HEADER_BYTES = 16384
+/** Ports loopback admis dans Host/Origin (le port attendu est celui d'écoute). */
+export const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '[::1]'])
+/** Identifiant JSON-RPC : entier sûr ≥ 0 ou chaîne technique ASCII bornée. */
+export const MAX_ID_STRING_CHARS = 128
+/** Longueur maximale d'un jeton statique (hors espaces, ASCII imprimable). */
+export const MAX_TOKEN_CHARS = 4096
+export const MCP_SERVER_NAME = 'session-dig'
+export const MCP_SERVER_VERSION = '0.0.0'
+
 /** Epoch ms maximal représentable par une date JS (bornage d'entrée). */
 export const MAX_DATE_EPOCH_MS = 8.64e15

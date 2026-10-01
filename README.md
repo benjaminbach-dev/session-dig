@@ -117,10 +117,77 @@ ingestion, ni `raw`, ni autostart. Le jalon M1 (« transport et contrat commun �
 
 **Obligation notée pour M1b** : les erreurs de protocole du SDK peuvent recopier
 les clés inconnues d'une entrée ; leur sanitisation doit être traitée en M1b — le
-seul Zod strict ne suffit pas à garantir l'absence d'écho.
+seul Zod strict ne suffit pas à garantir l'absence d'écho. **Traité en M1b** :
+`tools/call` passe par une couche de validation propre (SDK bas niveau), et le
+résultat d'erreur ne porte pas de `structuredContent`.
 
 Détails de conception : [design add-mcp-server](openspec/changes/add-mcp-server/design.md)
 (D2/D3/D7/D8/D10) ; état d'avancement : [tasks](openspec/changes/add-mcp-server/tasks.md).
+
+## MCP — lot M1b livré (transport HTTP, garde-fous, admission ; 01/10/2026)
+
+**Périmètre** : fabrique serveur Streamable HTTP officielle, réellement
+fonctionnelle, avec **handlers métier injectés et requis** (exactement
+`sdig_search`, `sdig_read`, `sdig_status` — aucun repli factice). Toujours **aucune
+commande `sdig mcp`**, **aucun bin autonome lancé sur corpus**, **aucun accès
+SQLite/corpus** : M1 reste partiel et le jalon PC n'est pas coché.
+
+- **API dev** : `createMcpServer({ handlers, token?, logger?, dispose? })` = écoute
+exclusive `127.0.0.1:18767` (toute autre adresse/port est refusée).
+`createMcpTestServer(...)` = primitive de test uniquement, port OS éphémère sur
+`127.0.0.1`. Chaque handler reçoit `(value, adaptations)` déjà validés/normalisés.
+- **Transport** : Streamable HTTP **stateless** (un serveur et un transport neufs
+par requête, réponse JSON), **route fixe `/mcp`** (toute autre route → 404), POST
+uniquement (GET/DELETE → 405, pas de flux SSE), `initialize` / `tools/list` /
+`tools/call` / reconnexion avec le `Client` officiel. Catalogue fermé ; aucune
+resource, prompt ni `sdig_raw`. Les helpers JSON Schema sont les sous-chemins
+**publiés** du paquet épinglé (`server/zod-compat.js`,
+`server/zod-json-schema-compat.js`).
+- **Anti-fuite SDK** : entête `mcp-protocol-version` prévalidée contre
+`SUPPORTED_PROTOCOL_VERSIONS` **avant** le transport (le SDK recopiait la valeur) ;
+paramètres connus malformés (initialize/tools/call/tools/list) → `-32602` générique ;
+identifiant JSON-RPC borné (entier sûr ≥ 0 ou chaîne technique ASCII ≤ 128,
+`null`/fractionnaire/objet/hors-jeu refusés, `id: null` alors) ; **toute réponse
+d'erreur du SDK est sanitizée** (code + message d'une liste fermée, `data` supprimé),
+les succès étant inchangés. La validation d'entrée M1a (`invalid_params` applicatif)
+s'exécute avant le handler ; le message Zod du SDK n'est jamais emprunté pour
+`tools/call` (`Server` bas niveau).
+- **Garde-fous** : `Host` en syntaxe **brute** — `127.0.0.1`, `localhost` ou
+`[::1]` avec le **port d'écoute courant sans zéro de tête** ; `Origin` en syntaxe
+**brute** (jamais une normalisation d'URL) — absent permis, sinon HTTP(S) loopback
+sans chemin/slash racine/credentials/requête/fragment, origines multiples et
+formes trompeuses (`127.1`, `%2e`, `\`, `0x…`, port 0/65536) refusées ;
+**jeton Bearer optionnel** (config validée au constructeur : absent/null =
+désactivé, `''`/espaces/type non-chaîne/trop long refusés ; jamais converti)
+exigé sur chaque requête ; la comparaison de **digests de taille fixe**
+(SHA-256) se fait en temps constant (`timingSafeEqual`), **sans prétendre** que le
+parsing, le hachage ou le serveur s'exécutent en temps constant, jamais journalisé
+ni renvoyé ; corps borné à 256 Kio avant analyse JSON,
+en-têtes limités à 16 Kio. Erreurs JSON-RPC bornées sans écho.
+- **Admission & arrêt** : mono-travail **server-global** (pas par requête) —
+`busy` si le créneau est occupé **au moment où le gestionnaire admet l'appel**,
+sans file applicative ; **aucune réactivité immédiate garantie** pendant un calcul
+synchrone (une requête reçue pendant un calcul peut n'être admise qu'après sa fin) ;
+l'admission est bloquée dès que
+la fermeture est entamée (avant et après lecture du corps) ; le créneau reste tenu
+jusqu'à la fin du handler malgré une déconnexion ; `close()` refuse les nouveaux
+travaux, **annule les corps incomplets**, attend le handler actif **et la réponse en
+cours** (sans détruire de réponse active), puis appelle `dispose` (erreur de
+`dispose` propagée comme échec, `close` idempotent). `close` avant `start` est
+cohérent ; `start` après `close` est refusé. Aucun signal global, aucun travail
+détaché, aucun autostart, aucun appel réseau sortant.
+- **Sortie** : validée par les schémas M1a ; non conforme → `internal` borné ;
+budget d'enveloppe JSON-RPC 524 288 octets, `content` **toujours présent**
+(`[]` si le texte dupliqué est retiré), sinon `internal`.
+- **Tests** : `node --test test/mcp-server.test.js` (27 tests, stubs synthétiques,
+port OS éphémère sur `127.0.0.1` uniquement, `Client` Streamable HTTP réel, requêtes
+HTTP brutes pour les en-têtes dupliqués/volumineux). La production n'est **pas**
+liée dans les tests (aucun port 18767 ouvert) ; la primitive éphémère est le test TCP réel.
+
+**Limites restantes** : handlers métier réels et accès SQLite lecture seule = lots
+suivants ; pas de lancement utilisateur (`sdig mcp`), pas de timeout applicatif
+garanti. Context7 était indisponible (fallback : registre npm + déclarations et
+code du paquet `@modelcontextprotocol/sdk@1.31.0` installé).
 
 ## Roadmap
 
