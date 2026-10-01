@@ -38,13 +38,42 @@ export const APP_ERROR_MESSAGES = Object.freeze({
 
 const CODE_SET = new Set(APP_ERROR_CODES)
 
-/** Erreur applicative bornée : code stable + message interne (non sérialisé tel quel). */
+// Raisons techniques DISTINGUÉES, par ensemble FERMÉ et sans écho : jamais un
+// message de bibliothèque, un chemin ou un contenu. Elles qualifient un refus
+// (`view_unavailable`) ou un échec interne de la couche de données.
+export const APP_ERROR_REASONS = Object.freeze({
+  view_unavailable: Object.freeze([
+    'missing_view',
+    'invalid_schema',
+    'missing_state',
+    'stale_view',
+    'pi_divergence',
+    'changed_publication'
+  ]),
+  internal: Object.freeze([
+    'async_callback',
+    'unsupported_callback',
+    'callback_failed',
+    'invalid_config'
+  ])
+})
+
+const REASON_SET = new Set(Object.values(APP_ERROR_REASONS).flat())
+
+/** La raison appartient-elle à l'ensemble fermé (et au code) ? */
+function reasonAllowed (code, reason) {
+  return reason != null && Array.isArray(APP_ERROR_REASONS[code]) && APP_ERROR_REASONS[code].includes(reason)
+}
+
+/** Erreur applicative bornée : code stable + raison fermée optionnelle. */
 export class McpAppError extends Error {
-  constructor (code) {
+  constructor (code, reason = null) {
     if (!CODE_SET.has(code)) throw new Error(`code d'erreur applicatif inconnu : ${code}`)
+    if (reason != null && !REASON_SET.has(reason)) throw new Error('raison d\'erreur applicative inconnue')
     super(APP_ERROR_MESSAGES[code])
     this.name = 'McpAppError'
     this.code = code
+    this.reason = reasonAllowed(code, reason) ? reason : null
   }
 }
 
@@ -55,15 +84,18 @@ export function isMcpAppError (err) {
 export const invalidParams = () => new McpAppError('invalid_params')
 export const invalidCursor = () => new McpAppError('invalid_cursor')
 export const invalidAnchor = () => new McpAppError('invalid_anchor')
-export const viewUnavailable = () => new McpAppError('view_unavailable')
+export const viewUnavailable = (reason = null) => new McpAppError('view_unavailable', reason)
 export const unknownSession = () => new McpAppError('unknown_session')
+export const internalError = (reason = null) => new McpAppError('internal', reason)
 
-/** Représentation sérialisable bornée : code + message fixe de la liste fermée. */
+/** Représentation sérialisable bornée : code + message fixe + raison fermée éventuelle. */
 export function appErrorPayload (err) {
-  // Le code est revérifié contre la liste fermée : une instance McpAppError dont
-  // le champ `code` a été muté (ex. valeur secrète) retombe sur `internal`.
+  // Le code ET la raison sont revérifiés contre les listes fermées : une instance
+  // McpAppError dont un champ a été muté (valeur secrète) retombe sur `internal`.
   const code = isMcpAppError(err) && CODE_SET.has(err.code) ? err.code : 'internal'
-  return { code, message: APP_ERROR_MESSAGES[code] }
+  const payload = { code, message: APP_ERROR_MESSAGES[code] }
+  if (isMcpAppError(err) && reasonAllowed(code, err.reason)) payload.reason = err.reason
+  return payload
 }
 
 /**

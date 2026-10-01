@@ -35,6 +35,19 @@
 > - [ ] Commande CLI `sdig mcp` / bin autonome : **non livrée** ; jalon PC jamais coché.
 >
 > **Validation parent M1b (01/10/2026)** : `npm test` **339/339**, OpenSpec et `git diff --check` OK, vérifications adversariales (en-têtes Host/Origin/version sentinelles, identifiants 200 k, params/initialize invalides) — erreurs 73-79 octets sans écho. Client MCP HTTP officiel exercé en **local éphémère** ; ce n'est pas une validation PC du jalon.
+>
+> **Lot data M1 (accès lecture seule, snapshot, fraîcheur) — sous-lot livré le 01/10/2026 ; M1 complet NON atteint, M3 non livré, jalon PC non coché.**
+>
+> - [x] `src/mcp/data.js` : ouverture readonly (`fileMustExist`, `query_only`), vérification schéma/layout/watermarks, callback SYNCHRONE dans un seul `BEGIN`/`COMMIT`, connexion fermée sur succès/erreur/refus ; décision de fraîcheur reprise de `checkFresh` (logique commune), pas de protocole dupliqué.
+> - [x] Fraîcheur par source exposable (opencode `message`/`session` ; pi `token` + nombre de fichiers suivis), `indexMtime`/`corpusVersion` diagnostics, aucune génération ni curseur fabriqué ; raisons fermées `missing_view`/`invalid_schema`/`missing_state`/`stale_view`/`pi_divergence`/`changed_publication`.
+> - [x] Détection de changement AVANT rendu : **état publié capturé une seule fois** (stat avant/après lecture, JSON strict) alimentant `checkFresh` (option `state` additive) et les projections ; **identité de l'index capturée avant ouverture** puis vérifiée après établissement du snapshot et avant rendu ; republication d'état, remplacement d'`index.db` (inode) et COMMIT concurrent (`data_version` relu après COMMIT, jamais pendant la transaction) → `view_unavailable`.
+> - [x] Callback purement synchrone : `AsyncFunction`/`AsyncGeneratorFunction`/`GeneratorFunction` refusés **avant invocation** ; `Promise` renvoyé refusé sans être attendu, rejet de Promise native neutralisé (aucune prétention d'annulation, aucun `.then` arbitraire) ; exception → `internal` bornée sans écho.
+> - [x] `availability` : `stat` seul, type attendu (`opencode` fichier, `pi` répertoire), absence → `false`, accès refusé → `null`, config propriétaire explicite, noms inconnus jamais renvoyés.
+> - [x] Façade lecture seule (pas d'`exec`/`pragma`/`attach`, statements `reader` seulement) ; callback documenté comme code interne de confiance, **pas un bac à sable** ni une entrée d'agent.
+> - [ ] Handler `sdig_status` (disponibilité/scans) et handlers search/read : **non livrés** ; aucun lancement utilisateur.
+> - [ ] Génération publiée persistante / curseur read : **M3, non livrés**.
+> - **WAL — exception étroite autorisée (décision utilisateur du 01/10/2026)** : SQLite peut créer/laisser les annexes natives `index.db-wal`/`index.db-shm` de la vue (mesures synthetic : `-shm` 32 768 o, `-wal` 0 o après `readonly.close`, SHA-256 de `index.db` identique). Conformité **limitée** à ces annexes : aucune donnée du corpus/vue/base source écrite, aucun cleanup manuel sous concurrence, `immutable=1` et l'ignorance d'un WAL vivant exclus, refus borné si le stockage ne permet pas la coordination ; aucune extension à d'autres fichiers ni sources ; spec explicitement adaptée après accord utilisateur ; producteurs CLI non modifiés.
+> - [x] Test **multiprocessus WAL** (`spawnSync`, env sans `NODE_OPTIONS`, timeout borné) entre deux SELECT du callback : snapshot isolé, refus `changed_publication` (`data_version`), lecture suivante voit la publication (vue opencode en avance permise). Validation parent **effective : `npm test` 374/374 (exit 0), OpenSpec `--all --strict` 6/6, `git diff --check` propre** — sans claim de validation PC.
 
 - [ ] Vérifier puis épingler le paquet/version du SDK MCP officiel et son transport Streamable HTTP.
 - [ ] Serveur sur `127.0.0.1:18767`, Host/Origin validés, token optionnel, aucun egress, SQLite en lecture seule, journaux sans contenu sur stderr par défaut. Aucun deuxième transport ni dépendance de lancement à Agora.

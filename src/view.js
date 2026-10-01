@@ -115,7 +115,7 @@ export function sourceStatesOf (rawState) {
 }
 
 /** La table watermark de la vue porte-t-elle la forme par source ? */
-function watermarkHasSourceColumn (db) {
+export function watermarkHasSourceColumn (db) {
   const cols = db.prepare('PRAGMA table_info(watermark)').all().map(c => c.name)
   return cols.includes('source') && cols.includes('token')
 }
@@ -193,19 +193,26 @@ export function openView (root = corpusPaths().root, dbFile = viewPath(root)) {
  * pas détectée ici ; l'outil de détection est l'empreinte du corpus
  * (`sdig fingerprint`), pas le watermark.
  */
-export function checkFresh (root = corpusPaths().root, { db = null } = {}) {
+const CHECK_FRESH_EXPLICIT_STATE = Symbol('checkFresh.explicitState')
+export function checkFresh (root = corpusPaths().root, { db = null, state = CHECK_FRESH_EXPLICIT_STATE } = {}) {
   const own = db == null
   const v = db ?? openView(root)
   try {
     if (!watermarkHasSourceColumn(v)) {
-      return { fresh: false, reason: 'vue de forme antérieure (watermark mono-source) — reconstruire avec `sdig refresh`' }
+      return { fresh: false, code: 'invalid_schema', reason: 'vue de forme antérieure (watermark mono-source) — reconstruire avec `sdig refresh`' }
     }
     const rows = new Map(v.prepare('SELECT source, token, message, session FROM watermark').all().map(r => [r.source, r]))
-    if (!rows.size) return { fresh: false, reason: 'vue sans watermark — reconstruire avec `sdig refresh`' }
+    if (!rows.size) return { fresh: false, code: 'invalid_schema', reason: 'vue sans watermark — reconstruire avec `sdig refresh`' }
     const stPath = corpusPaths(root).state
-    let st = {}
-    try { st = JSON.parse(fs.readFileSync(stPath, 'utf8')) } catch {
-      return { fresh: false, reason: 'corpus sans state.json lisible — relancer une ingestion' }
+    let st
+    if (state !== CHECK_FRESH_EXPLICIT_STATE) {
+      // État publié DÉJÀ CAPTURÉ par l'appelant : la même valeur sert à toute la
+      // lecture, sans seconde lecture disque pouvant intercaler une publication.
+      st = state
+    } else {
+      try { st = JSON.parse(fs.readFileSync(stPath, 'utf8')) } catch {
+        return { fresh: false, code: 'missing_state', reason: 'corpus sans state.json lisible — relancer une ingestion' }
+      }
     }
     // Fraîcheur PER-SOURCE (design D2) : une vue en retard sur UNE source est en
     // retard, point. Un jeton n'a pas d'ordre — pour pi, l'égalité fait foi ;
@@ -216,20 +223,20 @@ export function checkFresh (root = corpusPaths().root, { db = null } = {}) {
     // déjà être COMMITée alors qu'elle est encore absente de state.json.
     for (const name of rows.keys()) {
       if (name !== 'opencode' && !Object.hasOwn(sources, name)) {
-        return { fresh: false, reason: `vue en avance sur la source ${name} (jeton absent de l'état publié) — lancer \`sdig refresh\`` }
+        return { fresh: false, code: 'view_ahead', reason: `vue en avance sur la source ${name} (jeton absent de l'état publié) — lancer \`sdig refresh\`` }
       }
     }
     for (const [name, s] of Object.entries(sources)) {
       const row = rows.get(name)
       if (!row) {
-        return { fresh: false, reason: `vue sans jeton de fraîcheur pour la source ${name} — lancer \`sdig refresh\`` }
+        return { fresh: false, code: 'stale_view', reason: `vue sans jeton de fraîcheur pour la source ${name} — lancer \`sdig refresh\`` }
       }
       if (name === 'opencode') {
         if ((s.message ?? -1) > (row.message ?? -1) || (s.session ?? -1) > (row.session ?? -1)) {
-          return { fresh: false, reason: `vue en retard sur la source opencode (vue message=${row.message}/session=${row.session}, corpus message=${s.message}/session=${s.session}) — lancer \`sdig refresh\`` }
+          return { fresh: false, code: 'stale_view', reason: `vue en retard sur la source opencode (vue message=${row.message}/session=${row.session}, corpus message=${s.message}/session=${s.session}) — lancer \`sdig refresh\`` }
         }
       } else if (row.token !== s.token) {
-        return { fresh: false, reason: `vue en retard sur la source ${name} (jeton divergent) — lancer \`sdig refresh\`` }
+        return { fresh: false, code: 'pi_divergence', reason: `vue en retard sur la source ${name} (jeton divergent) — lancer \`sdig refresh\`` }
       }
     }
     return { fresh: true, watermark: Object.fromEntries(rows) }

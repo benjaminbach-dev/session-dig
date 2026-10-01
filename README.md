@@ -184,10 +184,42 @@ port OS éphémère sur `127.0.0.1` uniquement, `Client` Streamable HTTP réel, 
 HTTP brutes pour les en-têtes dupliqués/volumineux). La production n'est **pas**
 liée dans les tests (aucun port 18767 ouvert) ; la primitive éphémère est le test TCP réel.
 
-**Limites restantes** : handlers métier réels et accès SQLite lecture seule = lots
-suivants ; pas de lancement utilisateur (`sdig mcp`), pas de timeout applicatif
-garanti. Context7 était indisponible (fallback : registre npm + déclarations et
-code du paquet `@modelcontextprotocol/sdk@1.31.0` installé).
+**Limites restantes** : handlers métier réels = lots suivants ; pas de lancement
+utilisateur (`sdig mcp`), pas de timeout applicatif garanti. Context7 était
+indisponible (fallback : registre npm + déclarations et code du paquet
+`@modelcontextprotocol/sdk@1.31.0` installé).
+
+## MCP — accès données lecture seule (lot data M1, 01/10/2026)
+
+**Périmètre** : `src/mcp/data.js` ouvre la vue publiée en lecture seule et exécute
+un callback SYNCHRONE dans un **seul snapshot**, avec contrôle de fraîcheur par
+source. Toujours **aucun handler `sdig_search`/`sdig_read`/`sdig_status`**, aucune
+commande `sdig mcp`, aucun serveur sur corpus réel, aucune ingestion/réparation,
+aucun curseur ni fragmentation (M3 non livré) ; **M1 complet non atteint** (handlers métier et lancement à venir) et **aucune validation PC** du jalon.
+
+- **API** : `openReadSnapshot({ root, sources }, callback)` → `{ data, freshness,
+  availability }`. `root` et `sources` viennent de la configuration du propriétaire
+  (jamais d'un chemin fourni par l'appelant). La vue est ouverte
+  `{ readonly: true, fileMustExist: true }` + `PRAGMA query_only`, sans créer la
+  base ni le corpus. Le callback reçoit une **façade lecture seule** (pas
+  d'`exec`/`pragma`/`attach`, statements `reader` seulement) et est **du code
+  interne de confiance**, pas une entrée d'agent ni un bac à sable.
+- **Fraîcheur** : la décision vient de `checkFresh` (logique commune `src/view.js`,
+  pas de duplication). `freshness = { sources, indexMtime, corpusVersion }` :
+  watermarks **publiés** par source (opencode `message`/`session`, pi `token` +
+  nombre de fichiers suivis ou `null`), horodatage d'index (diagnostic) et version
+  de schéma. Aucun chemin local, aucun nom de fichier suivi. `view_unavailable`
+  avec raison fermée : `missing_view`, `invalid_schema`, `missing_state`,
+  `stale_view`, `pi_divergence`, `changed_publication`. Une vue opencode en avance
+  (COMMIT avant `state.json`) reste lisible ; une divergence de jeton pi refuse
+  jusqu'à réconciliation CLI ; une source absente mais archivée ne bloque pas.
+- **Cohérence** : UN état publié **capturé une seule fois** (stat avant/après lecture du contenu, JSON strict, `layoutVersion` numérique exacte) alimente `checkFresh` (option `state` additive) et les projections ; aucune seconde lecture disque ne peut intercaler une autre publication. L'identité de l'index est capturée **avant** l'ouverture puis vérifiée après l'établissement du snapshot et avant rendu. Sont refusés (`view_unavailable: changed_publication`) : republication d'état pendant la capture/callback, remplacement d'`index.db` à tout moment, COMMIT concurrent d'une autre connexion (`PRAGMA data_version` relu après le COMMIT — jamais pendant la transaction, isolation de snapshot).
+- **Callback purement synchrone** : les formes `AsyncFunction`/`AsyncGeneratorFunction`/`GeneratorFunction` sont refusées **avant invocation** (`internal: async_callback`/`unsupported_callback`) ; un `Promise` renvoyé par un callback sync est refusé sans être attendu, et un rejet de **Promise native** est neutralisé par un `catch` vide (aucune prétention d'annulation, aucun `.then` arbitraire). Une exception non applicative devient `internal` bornée. Le callback est du code interne de confiance, **pas un bac à sable** : `PRAGMA`/lecture d'autres fichiers via la connexion reste de la responsabilité de ce code.
+- **Aucune génération persistante ni curseur** : `data_version` n'est qu'une détection sur une connexion, l'horodatage d'index n'est pas une identité. Les cursors restent M3.
+- **`availability`** : `stat` seul (aucun contenu), `opencode` attend un fichier et `pi` un répertoire ; type inversé → `false`, absence → `false`, erreur d'accès → `null` (inconnue). Config propriétaire explicite (`opencode`/`pi`, `{ path }`) ; noms inconnus ignorés et jamais renvoyés.
+- **WAL — exception étroite autorisée (décision utilisateur du 01/10/2026)** : SQLite peut **créer puis laisser** ses annexes natives de coordination `index.db-wal` et `index.db-shm` pour la vue (mesures synthetic : `-shm` 32 768 o, `-wal` 0 o après `readonly.close`, SHA-256 de `index.db` identique). Cette conformité **limitée et explicite** n'autorise aucune écriture de **données** du corpus, de la vue ou de la base source ; aucune suppression/cleanup manuel sous concurrence ; `immutable=1` et l'ignorance d'un WAL vivant restent exclus ; un stockage incapable d'assurer cette coordination doit produire un refus borné (`view_unavailable`) plutôt qu'une autre écriture. Aucune extension à d'autres fichiers ni sources ; spec et producteurs CLI non modifiés.
+- **Tests** : `node --test test/mcp-data.test.js` (35 tests, fixtures synthétiques sous tmp, aucun accès source réelle), dont type/accès `availability`, injections FS déterministes (état republié, index remplacé pendant l'établissement et pendant la capture finale), **concurrence MULTIPROCESSUS WAL entre deux SELECT du callback** (writer enfant `spawnSync` : snapshot isolé, puis refus `changed_publication` par `data_version` ; lecture suivante voit la publication, vue opencode en avance permise), refus async/generator, neutralisation de rejet natif, et mesure exacte des annexes WAL (autorisées par consentement utilisateur du 01/10/2026).
+- **Sources de vérification** : Context7 (better-sqlite3) était **inaccessible** ; recoupement sur les docs officielles — SQLite WAL « Read-Only Databases » (https://www.sqlite.org/wal.html), `PRAGMA data_version` (https://www.sqlite.org/pragma.html#pragma_data_version, comparaison sur la même connexion), API better-sqlite3 (https://github.com/WiseLibs/better-sqlite3/blob/master/docs/api.md, callbacks de transaction async non supportés). Aucune version ni dépendance présumée : les **mesures et tests locaux restent la provenance principale**.
 
 ## Roadmap
 
