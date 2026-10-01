@@ -8,7 +8,7 @@
 - [x] Intégration de la première relecture Advisor (26/09) : contradiction `source`/corpus hérité levée (champ exigé sur les nouvelles lignes, pas rétroactivement) ; politique `bashExecution` unifiée en une règle déterministe + exécutions orphelines ; fraîcheur pi définie par jeton déterministe ; tolérance bornée à la ligne finale non terminée (une ligne terminée invalide échoue proprement) ; affirmation `fingerprint` corrigée (empreintes par fichier) ; périmètre `--source --raw` et provenance des titres spécifiés ; invalidation d'état sur changement de chemin de source.
 - [x] Seconde passe Advisor (26/09) intégrée : partIds **qualifiés par session** (fixé en spec, plus de repli conditionnel) ; promesse de découverte des orphelines par `--raw` retirée (le scan ne couvre que les preuves référencées — orphelines lues par `sdig raw` explicite, partId communiqué en sortie d'ingestion) ; égalité de rebuild qualifiée « depuis les mêmes sources » (archive ≠ reconstructible après disparition d'une source) ; scénarios « Source évolutive » et « Répertoire source absent » désambiguïsés ; sémantique du jeton pi sans ordre explicitée.
 - [x] Valider avec `openspec validate add-pi-adapter --strict --no-interactive` et cohérence des quatre documents ; validation globale `--specs --changes --strict --no-interactive` (relancée après relecture Advisor).
-- [ ] Commit/push documentaire sur demande explicite. Aucun début d'implémentation implicite.
+- [x] Commit/push documentaire réalisé (`2b7fba3`, présent sur `origin/main` ; vérifié le 01/10/2026). Cette case n'autorise aucun début d'implémentation implicite.
 
 ## Phase implémentation (change séparé, sur accord)
 

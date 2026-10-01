@@ -10,7 +10,7 @@
 - [x] Intégrer la relecture croisée Advisor du 26/09 : filtre source, fraîcheur par source, génération publiée, validation des partIds, status multi-source, priorité hits puis voisins, `view_unavailable`, ordre binaire stable et pagination SQL. Les détails search/raw historiques ne sont plus des obligations du MVP ; les garanties de lecture et de provenance restent requises.
 - [x] Recentrage solo demandé par l'utilisateur : search/read/status ; search top-k **sans curseur** ; lecture complète par fragments conservée ; mono-travail sans timeout applicatif garanti ; confidentialité et descriptions d'outils obligatoires dès le MVP. Extensions conditionnelles, sans commande implicite de les réaliser.
 - [x] Valider le patch documentaire final : OpenSpec global strict (6/6 éléments), `git diff --check`, relecture et corrections de cohérence des quatre documents. Validation documentaire seulement, pas une attestation d'implémentation du MVP.
-- [ ] Commit/push documentaire sur demande explicite. Aucun début d'implémentation implicite.
+- [x] Commit/push documentaire réalisé (`19c637f`, présent sur `origin/main` ; vérifié le 01/10/2026). Cette case n'autorise aucun début d'implémentation implicite.
 
 ## Phase implémentation : MVP (M1–M4, contribue à J-MCP ; sur accord)
 

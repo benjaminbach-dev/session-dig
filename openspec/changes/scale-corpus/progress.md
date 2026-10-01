@@ -2,7 +2,64 @@
 
 **Change NON terminé, NON archivé.** Cette fiche remplace les anciens bilans « tout coché ». Les specs décrivent la cible ; les cases rouvertes dans tasks.md sont des écarts restant à traiter. Pas de démarrage du MCP implicite. **Rescopage à la demande explicite de l'utilisateur** : jalon « usage solo local validé sur PC » en trois lots (A intégrité/prérequis, B MCP minimal + validation PC, C optimisations conditionnées aux mesures) — voir proposition ; le premier usage MCP n'attend pas la clôture complète de scale-corpus ; intégrité/reprise et exclusion d'écrivains restent bloquantes avant usage sur corpus réel. Prototypage sur fixtures permis avant le jalon. Cet encadré ne transforme pas les validations historiques ci-dessous en validations nouvelles.
 
-## Livré dans la passe corrective
+## Validation PC du 01/10/2026 — A2 à A4 et bilan A5
+
+Code livré et poussé : `6af37c7` (correction de la fixture home en `36a1fd5`). Environnement de validation : Linux x64, Node 26.8.1, `better-sqlite3` 13.0.3. Fixtures synthétiques et répertoires jetables uniquement ; aucune ingestion personnelle, évaluation naturelle ni mesure du corpus réel PC.
+
+- **A1 reste partiel et ouvert** : les 9 tests multiprocessus du verrou passent, mais les limites coopératives précédemment documentées restent valables. Ni reprise automatique ni atomicité face au retrait externe d'un verrou. Un SIGKILL laisse le verrou ; son retrait manuel exige l'arrêt coordonné de tous les utilisateurs du corpus, jamais une simple décision fondée sur le PID.
+- **A2 validé** : `test/lock-archive.test.js` (13 tests, dont un test de la queue IPC) vérifie les opérations réelles index/rebuild, empreinte, migration v1 et chemin déjà v2, recover, contre une ingestion concurrente. Le verrou couvre contrôles, parcours, publication et sorties sans changement ; les rebuilds imbriqués utilisent le verrou détenu sans le libérer. Refus comparés octet par octet, WAL compris (SHM transitoire exclu). Barrières IPC, aucun délai comme synchronisation.
+- **A3 validé** : `test/crash-real.test.js` (17 tests) couvre 14 SIGKILL observés : opencode seul et corpus mixte, chacun aux 7 transitions ci-dessous ; 2 reprises sans sources avec watermark conservé puis convergence ; 1 régression de nettoyage/empreinte protégeant les preuves dont l'id contient `.tmp-` ou `.new-`. L'arrêt est réel, pas un état disque fabriqué. Le verrou reste refusé après l'arrêt ; le retrait opérateur dans la fixture intervient uniquement après sortie observée du seul processus utilisateur de ce corpus. Reprise avec sources puis passe vide : contenu canonique attendu, comptes exacts, pas de perte/doublon, vue égale à l'archive, temporaires nettoyés et octets publiés stables.
+- **A4 validé** : `test/snapshot-real.test.js` (9 tests) publie un vrai delta pendant les commandes CLI search avec contexte et read avec ancre, en opencode seul et mixte. Les résultats complets restent de génération A, un nouveau lecteur voit B. Les 3 cas ouverture → BEGIN → COMMIT avant état distinguent opencode lisible, Pi divergent refusé et premier Pi absent de l'état publié refusé. Les 2 rebuilds autonomes utilisent des sources rendues indisponibles et des gardes d'accès, conservent archive/état octet par octet, événements, métadonnées, recherche, lecture et comptes.
+- **A5 consigné** : suite complète verte et assertions/écarts recensés ici. Cocher la preuve documentaire ne clôt pas le lot A : A1 reste ouvert. Les autres exigences composites ne deviennent pas automatiquement satisfaites.
+
+### Transitions d'interruption effectivement exercées (A3)
+
+| Point | Barrière juste avant l'appel, puis SIGKILL |
+|---|---|
+| Avant staging | Écriture du marqueur : absent, aucun remplacement commencé |
+| Pendant staging | Premier rename d'un temporaire `.new-` déjà écrit |
+| Entre renames | Rename des métadonnées, shards déjà remplacés |
+| Dernier rename avant COMMIT | `Database.exec('COMMIT')`, tous les renames déjà faits |
+| Après COMMIT avant état | Écriture de `state.json.tmp-<pid>` |
+| Après état avant retrait du marqueur | Suppression du marqueur |
+| Temporaire d'état écrit avant publication | Rename de `state.json.tmp-<pid>` |
+
+La détection par marqueur est vérifiée dès que des remplacements ont pu commencer. Avant sa pose, le verrou laissé par l'arrêt brutal reste le refus conservateur. La réclamation coordonnée du verrou est une action d'opérateur simulée sur fixture, pas une nouvelle fonction automatique du produit.
+
+### Correctifs prouvés et validations
+
+- Verrou partagé dans `src/lock.js`, acquisition avant contrôles des opérations d'archive et conservation pendant les appels imbriqués.
+- Nettoyage limité aux noms temporaires du protocole (y compris état atomique et vue temporaire/WAL/SHM) ; les motifs internes d'identifiants ne provoquent ni suppression ni exclusion de l'empreinte.
+- Recherche, scan `--raw` compris, avertie sous marqueur ; JSON préservé par avertissement sur stderr (`test/read-json-warning.test.js`, 3 cas de recherche ajoutés).
+- Deux défauts A4 reproduits avant correction : fenêtre de fraîcheur entre openView et BEGIN, et première ligne de watermark Pi sans état publié correspondant. Revalidation dans le snapshot avant toute donnée rendue ; la tolérance opencode en avance est conservée.
+
+Commandes exécutées :
+
+```sh
+env -u NODE_OPTIONS timeout 90s node --test test/lock-archive.test.js test/lock-concurrency.test.js
+# 22/22 après contrôle A2
+
+env -u NODE_OPTIONS timeout 120s node --test test/crash-real.test.js test/crash.test.js test/repair.test.js test/read-json-warning.test.js
+# 39/39 après contrôle A3 ; le test de nettoyage a ensuite été renforcé
+# pour couvrir aussi les sidecars de la vue temporaire, puis inclus dans la suite finale
+
+env -u NODE_OPTIONS timeout 150s node --test test/snapshot-real.test.js
+# 9/9 ; les gardes du rebuild ont ensuite été renforcées et incluses dans la suite finale
+
+env -u NODE_OPTIONS timeout 180s npm test
+# Validation FINALE de 6af37c7 : 277/277, 0 échec, 0 ignoré
+# Durée de cette suite sur fixtures : environ 24,5 s, pas un banc de performance
+```
+
+`git diff --check` a aussi réussi. Les états fabriqués des anciens tests sont conservés comme compléments, jamais substitués à cette campagne réelle.
+
+### Ce qui reste ouvert après cette validation
+
+A1 et les exigences composites encore non entièrement démontrées ; mémoire/coûts et limites des parcours raw/read complets ; plan SQL et mesures sur le volume PC réel ; lot B (CLI réel puis MVP MCP/client) ; lot C conditionnel ; ordre d'archivage pi/scale. Aucun change n'est clos ou archivé. Pas de garantie de résistance à une panne matérielle ou de disponibilité permanente pendant une publication. `recover` seul ne ramasse pas les temporaires orphelins et retire le marqueur : une ingestion ultérieure sans marqueur ne déclenche donc pas ce balayage. Le cas recover avec temporaires résiduels reste à traiter/valider ; les deux scénarios recover exercés ici n'en laissent pas. Le nettoyage validé ci-dessus est celui d'une relance avec sources sous marqueur non réconcilié.
+
+Les sections suivantes sont le bilan HISTORIQUE antérieur à cette validation PC : leurs résultats restent datés, et leurs mentions « à reprendre » ne remplacent pas le présent point de reprise.
+
+## Livré dans la passe corrective — historique
 
 - Pagination des sessions au-delà de 2 000 même sans index time_updated ; messages groupés par session, staging/fusion au fil du flux (plus de rétention de tous les événements du delta).
 - Vraie transaction de lecture pour read et recherche CLI ; fenêtres par clé, contexte dense contenant le hit, métadonnées limitées aux sessions des hits.
@@ -52,7 +109,7 @@ timeout 60s node --test test/repair.test.js test/scan-context.test.js test/cli-w
 
 Suite complète, évaluation, bancs 100k/500k/1000× et campagne de crash/concurrence réelle **non relancés dans cette passe**, volontairement différés. Aucun changement du corpus réel ni de la base source. Les anciennes mesures 92/92, 28/28 figé, 24/28 vivant et p95 167 ms @100k sont historiques, pas des validations du patch courant.
 
-## À reprendre (ordre recommandé)
+## À reprendre — historique avant la validation PC du 01/10
 
 1. **Exclusion d'écrivains et publication** : le volet verrou wx/PID (races de reprise/release, vide/illisible, propriétaire vivant/mort, acquire/release) est **couvert partiellement au lot A1 — case laissée ouverte** (reprise automatique retirée, refus conservateur, best effort coopératif non atomique, tests multiprocessus — voir section dédiée). Restent : index/fingerprint/migration protégés contre une ingestion démarrant après leur contrôle initial (A2) ; réclamation sûre du verrou après arrêt brutal (A3) ; recyclage PID documenté comme risque résiduel ; erreurs après staging, nettoyage des connexions, publication d'une nouvelle vue et durabilité. L'exclusion d'écrivains reste un **contrat** (un seul écrivain, autres mutations échouent proprement) ; wx/PID reste une implémentation partielle, pas un flock. Un verrou ambigu est refusé conservativement ; pas de reprise automatique. Fingerprint est en lecture seule mais doit être protégé contre une mutation pendant son parcours.
 2. **Mémoire/coûts restants** : cur.evs retient le delta d'une session entière ; sesTouched retient les sessions modifiées ; liste de renames et listShards proportionnelles au nombre de sessions. rawScan fait encore `.all()` sur jusqu'à un million de références (plafond silencieux), status énumère tous les raw. read complet matérialise une session. Décider bornes/streaming ; pas de promesse « mémoire indépendante partout » pour l'instant.
@@ -63,4 +120,4 @@ Suite complète, évaluation, bancs 100k/500k/1000× et campagne de crash/concur
 
 ## Reprise opérationnelle
 
-Lire cette fiche et `git status` avant toute modification. Tests légers d'abord ; conserver les changements déjà livrés, pas de réécriture globale. Prochain développement éventuel : lot A ciblé, validation PC et MVP MCP sur accord ; pas de réécriture de l'architecture livrée. Les données privées restent hors Git. Le présent recentrage ne modifie aucun code et n'autorise ni commit/push, ni démarrage, ni archivage implicite.
+Lire d'abord le point « Validation PC du 01/10/2026 » ci-dessus et `git status` avant toute modification. Conserver les changements livrés en `6af37c7`, sans réécriture globale. A2–A4 sont validés sur fixtures ; A1 reste partiel et doit être traité ou arbitré explicitement avant de déclarer le lot A validé. Validation CLI réelle et MVP MCP restent soumis à un nouvel accord. Les données privées restent hors Git. Le présent recentrage ne modifie aucun code et n'autorise ni commit/push, ni démarrage, ni archivage implicite.
