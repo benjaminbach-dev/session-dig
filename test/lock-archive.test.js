@@ -123,12 +123,11 @@ async function ctx (t, { v1 = false } = {}) {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
         const r = rel ? `${rel}/${e.name}` : e.name
         const p = path.join(d, e.name)
+        // Le fichier de verrou (lot A1, base SQLite) et ses annexes sont dérivés :
+        // exclus de la comparaison octet par octet. La vue (`index.db`) et son WAL
+        // restent couverts ; seul `index.db-shm` (transitoire) est exclu.
         if (e.isDirectory()) walk(p, r)
-        // hors verrou (éphémère) et -shm de la vue seul (transitoire) : le corpus,
-        // la vue elle-même ET son WAL sont couverts octet par octet — SQLite ne
-        // modifie la vue que dans le WAL, l'exclure masquerait exactement la
-        // mutation que le test veut interdire.
-        else if (r !== '.ingest-lock' && r !== 'index.db-shm') out.set(r, fs.readFileSync(p))
+        else if (!/^\.ingest-lock(-journal|-wal|-shm)?$/.test(r) && r !== 'index.db-shm') out.set(r, fs.readFileSync(p))
       }
     }
     walk(root, '')
@@ -159,6 +158,20 @@ function assertSameSnapshot (before, after, msg) {
     assert.ok(after.has(k), `${msg} — ${k} toujours présent`)
     assert.deepEqual(after.get(k), v, `${msg} — octets de ${k} inchangés`)
   }
+}
+
+// Lit le PID du propriétaire quand le verrou est LIBRE (aucune trace ⇒ null).
+// Un fichier absent ou un verrou noyau tenu par un autre processus n'est pas
+// lisible : les tests qui lisent pendant la détention utilisent l'existence + le
+// refus, jamais une lecture concurrente.
+function lockFree (lockPath) {
+  if (!fs.existsSync(lockPath)) return true
+  let db
+  try { db = new Database(lockPath, { readonly: true }) } catch { return false }
+  try {
+    const r = db.prepare('SELECT pid FROM lock_owner WHERE id = 1').get()
+    return r == null
+  } catch { return false } finally { db.close() }
 }
 
 // Corpus v1 synthétique (events.jsonl trié + sessions.jsonl + state plate).
@@ -199,7 +212,7 @@ test('A2-1 : buildView (rebuild) en cours → ingest concurrente refusée au ver
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused']) // barrière : DANS buildView, verrou acquis, rm de l'index pas encore exécuté
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid, 'l’enfant détient réellement le verrou')
+  assert.ok(fs.existsSync(c.paths.lock), 'l’enfant détient réellement le verrou')
   const before = c.snapshot()
   assert.ok(fs.existsSync(c.viewDb), 'index.db pas encore effacé (pause au tout début de la mutation)')
   await assert.rejects(() => ingest({ root: c.root, db: c.source }), (e) => {
@@ -227,7 +240,7 @@ test('A2-2 : index BM25 (chemin CLI `sdig index`) en cours → même exclusion ;
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused'])
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid)
+  assert.ok(fs.existsSync(c.paths.lock))
   const before = c.snapshot()
   await assert.rejects(() => ingest({ root: c.root, db: c.source }), /verrou consultatif/, 'ingestion refusée tant que l’index se reconstruit')
   assertSameSnapshot(before, c.snapshot(), 'refus : octets inchangés')
@@ -251,7 +264,7 @@ test('A2-3 : ingestion en cours (barrière au retrait du marqueur) → buildView
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused']) // state.json écrit, marqueur encore présent, verrou tenu
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid)
+  assert.ok(fs.existsSync(c.paths.lock))
   assert.equal(ingestRunning(c.root), true, 'marqueur encore présent à la barrière')
   const before = c.snapshot()
   assert.throws(() => buildView(c.root), /verrou consultatif/, 'rebuild refusé (verrou, pas seulement marqueur)')
@@ -276,7 +289,7 @@ test('A2-4 : fingerprint en cours (pause dans la marche de lecture) → ingest r
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused']) // SOUS verrou, refus marqueur déjà passé, marche entamée
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid)
+  assert.ok(fs.existsSync(c.paths.lock))
   const before = c.snapshot()
   await assert.rejects(() => ingest({ root: c.root, db: c.source }), /verrou consultatif/)
   assertSameSnapshot(before, c.snapshot(), 'refus : octets inchangés')
@@ -295,7 +308,7 @@ test('A2-5 : migrate v1 en cours (pause dans le staging des shards) → ingest r
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused']) // marqueur migrate posé, shards pas tous écrits
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid)
+  assert.ok(fs.existsSync(c.paths.lock))
   const before = c.snapshot()
   await assert.rejects(() => ingest({ root: c.root, db: c.source }), /verrou consultatif/, 'refus au VERROU (pas au marqueur) : verrou acquis avant tout contrôle')
   assertSameSnapshot(before, c.snapshot(), 'refus : octets inchangés')
@@ -320,7 +333,7 @@ test('A2-6 : migrate chemin « déjà v2 » — verrou tenu pendant la re-sharde
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused']) // DANS shardFlatRaws, sous verrou, renommage pas encore exécuté
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid)
+  assert.ok(fs.existsSync(c.paths.lock))
   assert.ok(fs.existsSync(flat), 'la preuve flat est encore en place à la barrière')
   const before = c.snapshot()
   await assert.rejects(() => ingest({ root: c.root, db: c.source }), /verrou consultatif/, 'ingest refusée pendant la mutation raw du chemin v2')
@@ -346,7 +359,7 @@ test('A2-7 : recover en cours (pause au rm de l’index via verrou TRANSMIS à b
   await kid.waitAny(['ready'])
   kid.send('run')
   await kid.waitAny(['paused']) // DANS buildView appelé avec heldLock : verrou tenu, index pas encore effacé
-  assert.equal(JSON.parse(fs.readFileSync(c.paths.lock, 'utf8')).pid, kid.pid)
+  assert.ok(fs.existsSync(c.paths.lock))
   const before = c.snapshot()
   await assert.rejects(() => ingest({ root: c.root, db: c.source }), /verrou consultatif/, 'refus au VERROU bien que le marqueur soit présent (verrou avant tout contrôle)')
   assert.ok(fs.existsSync(c.viewDb), 'index pas encore effacé')
@@ -368,12 +381,12 @@ test('A2-8 : marqueur non réconcilié sur corpus v2 → buildView/fingerprint/m
   fs.writeFileSync(c.paths.marker, '{}\n')
   const before = c.snapshot()
   assert.throws(() => buildView(c.root), /marqueur/)
-  assert.ok(!fs.existsSync(c.paths.lock), 'verrou libéré après le refus')
+  assert.ok(lockFree(c.paths.lock), 'verrou libéré après le refus')
   const probe = new CorpusLock(c.paths.lock)
   assert.equal(probe.acquire(), true, 'tentative après release : le verrou est libre')
   probe.release()
   assert.throws(() => fingerprint(c.root), /marqueur/)
-  assert.ok(!fs.existsSync(c.paths.lock), 'verrou libéré après le refus de fingerprint')
+  assert.ok(lockFree(c.paths.lock), 'verrou libéré après le refus de fingerprint')
   await assert.rejects(() => migrate(c.root), /marqueur/, 'migrate refuse même sur un corpus déjà v2')
   assertSameSnapshot(before, c.snapshot(), 'les refus au marqueur : octets inchangés (raw v2 non muté)')
   const r = recover(c.root) // seul parcours explicitement autorisé sous son marqueur
@@ -388,7 +401,7 @@ test('A2-9 : marqueur non réconcilié sur corpus v1 → migrate refusé sans ri
   await assert.rejects(() => migrate(c.root), /marqueur/)
   assertSameSnapshot(before, c.snapshot(), 'aucune mutation du corpus v1')
   assert.ok(!fs.existsSync(path.join(c.root, 'events')), 'aucun répertoire events/ créé')
-  assert.ok(!fs.existsSync(c.paths.lock), 'verrou libéré')
+  assert.ok(lockFree(c.paths.lock), 'verrou libéré')
   const r = recover(c.root)
   assert.equal(r.done, true, 'recover reste autorisé sous son marqueur')
 })
@@ -412,10 +425,10 @@ test('A2-10 : heldLock invalide refusé AVANT toute mutation ; verrou valide tra
   assert.equal(lock.acquire(), true)
   const bv = buildView(c.root, { heldLock: lock })
   assert.equal(bv.events, c.expectedEvents)
-  assert.ok(lock.fd != null, 'buildView n’a PAS libéré le verrou transmis')
+  assert.ok(lock.db != null, 'buildView n’a PAS libéré le verrou transmis')
   assert.ok(fs.existsSync(c.paths.lock), 'le fichier de verrou reste en place')
   lock.release()
-  assert.ok(!fs.existsSync(c.paths.lock), 'release du détenteur : verrou retiré')
+  assert.ok(lockFree(c.paths.lock), 'release du détenteur : trace effacée, fichier de verrou conservé')
 })
 
 test('A2-11 : duringRecovery ne désactive pas le verrou ; un refus de verrou ne crée rien dans le corpus', { timeout: 40000 }, async (t) => {
@@ -447,19 +460,19 @@ test('A2-12 : no-op (recover sans marqueur, migrate déjà v2) et exceptions (mi
   const c = await ctx(t)
   const r = recover(c.root) // sans marqueur : no-op SOUS verrou
   assert.equal(r.done, false)
-  assert.ok(!fs.existsSync(c.paths.lock), 'no-op recover : verrou libéré')
+  assert.ok(lockFree(c.paths.lock), 'no-op recover : verrou libéré')
   const probe1 = new CorpusLock(c.paths.lock)
   assert.equal(probe1.acquire(), true, 'tentative après no-op')
   probe1.release()
   const m = await migrate(c.root) // déjà v2, rien flat : no-op
   assert.equal(m.done, false)
-  assert.ok(!fs.existsSync(c.paths.lock), 'no-op migrate : verrou libéré')
+  assert.ok(lockFree(c.paths.lock), 'no-op migrate : verrou libéré')
   const empty = path.join(c.dir, 'corpus-vide')
   fs.mkdirSync(empty)
   await assert.rejects(() => migrate(empty), /corpus v1 introuvable/, 'exception sous verrou')
-  assert.ok(!fs.existsSync(path.join(empty, '.ingest-lock')), 'exception : verrou libéré')
+  assert.ok(lockFree(path.join(empty, '.ingest-lock')), 'exception : verrou libéré')
   await assert.rejects(() => ingest({ root: c.root, db: path.join(c.dir, 'gone.db') }), /introuvable/)
-  assert.ok(!fs.existsSync(c.paths.lock), 'exception ingest : verrou libéré (finally)')
+  assert.ok(lockFree(c.paths.lock), 'exception ingest : verrou libéré (finally)')
 })
 
 test('A2-13 : messages IPC déjà en queue avant l’abonnement waitAny sont consommés (barrières déterministes, sans délai)', { timeout: 20000 }, async (t) => {

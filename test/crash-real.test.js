@@ -237,18 +237,26 @@ function assertViewEqualsArchive (root) {
     'vue == archive sur disque (métadonnées)')
 }
 
-// ── Reprise du verrou par l'OPÉRATEUR de test, UNIQUEMENT après arrêt coordonné ──
+// Lit la trace propriétaire du verrou noyau (fichier lisible une fois le détenteur sorti).
+function lockOwnerPid (lockPath) {
+  const db = new Database(lockPath, { readonly: true })
+  try {
+    const r = db.prepare('SELECT pid FROM lock_owner WHERE id = 1').get()
+    assert.ok(r, 'une trace propriétaire est attendue dans le verrou')
+    return r.pid
+  } finally { db.close() }
+}
+
 function reclaimLock (root, victimPid, label) {
   const lockPath = path.join(root, '.ingest-lock')
-  const info = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
-  assert.equal(info.pid, victimPid, `${label} — le verrou portait bien le PID de la victime`)
+  assert.equal(lockOwnerPid(lockPath), victimPid, `${label} — le verrou portait bien le PID de la victime`)
   let alive = null
   try { process.kill(victimPid, 0); alive = true } catch (e) { alive = e.code === 'ESRCH' ? false : null }
   assert.equal(alive, false, `${label} — propriétaire mort (sortie observée avant retrait)`)
   // Le helper crash-child ne crée aucun sous-processus (aucun fork en lui) : aucun
   // enfant actif possible du propriétaire — retrait coordonné légitime, action de
   // TEST uniquement (le mécanisme de production ne change pas).
-  fs.rmSync(lockPath)
+  for (const s of ['', '-journal', '-wal', '-shm']) fs.rmSync(lockPath + s, { force: true })
 }
 
 // ── Points d'interruption (protocole : marqueur → staging → renames → COMMIT →
@@ -330,7 +338,7 @@ async function runCrashScenario (t, { family, point, mode = 'relance' }) {
 
   // ── état interrompu : verrou conservateur, marqueur détecteur, publication ──
   assert.ok(fs.existsSync(lockPath), `${point} — le verrou reste posé après l'arrêt brutal`)
-  assert.equal(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid, kid.pid,
+  assert.equal(lockOwnerPid(lockPath), kid.pid,
     `${point} — le verrou portait le PID de la victime`)
   // relance refusée tant que le verrou périmé est présent (refus conservateur)
   await assert.rejects(() => ingest(ocOpts(root, dbPath, piDir)), /verrou consultatif/,

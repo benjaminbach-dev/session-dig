@@ -194,7 +194,7 @@ function archiveBytes (root) {
       const rel = prefix ? `${prefix}/${e.name}` : e.name
       const file = path.join(dir, e.name)
       if (e.isDirectory()) walk(file, rel)
-      else if (!rel.startsWith('index.db') && rel !== '.ingest-lock') files.set(rel, fs.readFileSync(file))
+      else if (!rel.startsWith('index.db') && !rel.startsWith('.ingest-lock')) files.set(rel, fs.readFileSync(file))
     }
   }
   walk(root)

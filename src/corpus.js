@@ -69,7 +69,7 @@ export function recover (root = corpusPaths().root) {
   // explicitement autorisé sous son marqueur.
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
-    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer le fichier de verrou (et ses annexes -journal/-wal/-shm) manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
     if (!ingestRunning(root)) {
@@ -111,8 +111,10 @@ function sweepTemporaries (root) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
       const p = path.join(dir, e.name)
+      // Le fichier de verrou (lot A1, base SQLite) n'est jamais un temporaire de
+      // corpus : ne pas le traiter ici (le verrou est géré par CorpusLock).
       if (e.isDirectory()) walk(p)
-      else if (isTemporaryCorpusFile(root, p)) { fs.rmSync(p, { force: true }); n++ }
+      else if (p !== paths.lock && isTemporaryCorpusFile(root, p)) { fs.rmSync(p, { force: true }); n++ }
     }
   }
   walk(paths.root)
@@ -148,7 +150,7 @@ export async function ingest (opts = {}) {
 
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
-    throw new Error(`une ingestion est déjà en cours sur ce corpus (verrou consultatif ${paths.lock}) — réessayer une fois la première terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+    throw new Error(`une ingestion est déjà en cours sur ce corpus (verrou consultatif ${paths.lock}) — réessayer une fois la première terminée. Si son propriétaire est confirmé mort, retirer le fichier de verrou (et ses annexes -journal/-wal/-shm) manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
     ensureDir(paths.raw) // déplacé après acquisition (lot A2)
@@ -677,7 +679,7 @@ export async function migrate (root = corpusPaths().root) {
   // marqueur non réconcilié SOUS verrou : une migration ne s'applique jamais sur un
   // état non publié ; recover reste le seul parcours autorisé sous un marqueur.
   const lock = new CorpusLock(paths.lock)
-  if (!lock.acquire()) throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer plus tard. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+  if (!lock.acquire()) throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer plus tard. Si son propriétaire est confirmé mort, retirer le fichier de verrou (et ses annexes -journal/-wal/-shm) manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   try {
     if (ingestRunning(root)) {
       throw new Error("ingestion en cours non réconciliée (marqueur présent) — réconcilier d'abord : relancer `sdig ingest` ou `sdig ingest --recover`")
@@ -790,19 +792,21 @@ export function fingerprint (root = corpusPaths().root) {
   const paths = corpusPaths(root)
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
-    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer le fichier de verrou (et ses annexes -journal/-wal/-shm) manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
     if (ingestRunning(root)) {
       throw new Error("ingestion en cours non réconciliée (marqueur présent) — l'empreinte ne peut pas faire foi sur un état non publié : relancer `sdig ingest` ou `sdig ingest --recover`")
     }
-    const DERIVED = /^(index\.db|\.ingest-lock)(-wal|-shm)?$/
+    const DERIVED = /^(index\.db|\.ingest-lock)(-wal|-shm|-journal)?$/
     const files = []
     const walk = (dir, rel = '') => {
       let entries
       try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
       for (const e of entries) {
         const r = rel ? `${rel}/${e.name}` : e.name
+        // Le verrou (fichier `.ingest-lock`, base SQLite du lot A1) et ses annexes
+        // (`-journal`/`-wal`/`-shm`) sont dérivés et jetables : exclus de l'empreinte.
         if (e.isDirectory()) walk(path.join(dir, e.name), r)
         else if (!DERIVED.test(r) && !isTemporaryCorpusFile(root, path.join(dir, e.name))) files.push([r, path.join(dir, e.name)])
       }

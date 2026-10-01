@@ -75,7 +75,10 @@ if (process.env.CRASH_DB_EXEC) {
   const MATCH_SQL = process.env.CRASH_DB_EXEC
   const origExec = Database.prototype.exec
   Database.prototype.exec = function (sql, ...rest) {
-    if (armed && typeof sql === 'string' && sql.includes(MATCH_SQL)) {
+    // Ne pas armer la pause sur le COMMIT du FICHIER DE VERROU (lot A1, base SQLite
+    // dédiée `.ingest-lock`) : seul le COMMIT de publication de la vue importe ici.
+    const isLockDb = typeof this.name === 'string' && this.name.endsWith('.ingest-lock')
+    if (!isLockDb && armed && typeof sql === 'string' && sql.includes(MATCH_SQL)) {
       armed = false // usage unique : pause à ce point seulement
       send('paused', { at: `Database.exec(${sql.trim().slice(0, 60)})` })
       blockOnStdin()

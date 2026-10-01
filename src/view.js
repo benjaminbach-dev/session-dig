@@ -398,7 +398,7 @@ export function buildView (root = corpusPaths().root, { dbFile = viewPath(root),
   if (!own) assertHeldLock(heldLock, paths.lock)
   const lock = own ? new CorpusLock(paths.lock) : heldLock
   if (own && !lock.acquire()) {
-    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer le fichier de verrou (et ses annexes -journal/-wal/-shm) manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
     if (!duringRecovery && ingestRunning(root)) {

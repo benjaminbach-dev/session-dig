@@ -4,6 +4,8 @@
 
 ## Validation PC du 01/10/2026 — A2 à A4 et bilan A5
 
+> **Bilan HISTORIQUE, code `6af37c7`** — conservé tel quel (A1 y était partiel). La validation A1 ultérieure (PRoot, verrou noyau) fait l'objet d'une section distincte plus bas.
+
 Code livré et poussé : `6af37c7` (correction de la fixture home en `36a1fd5`). Environnement de validation : Linux x64, Node 26.8.1, `better-sqlite3` 13.0.3. Fixtures synthétiques et répertoires jetables uniquement ; aucune ingestion personnelle, évaluation naturelle ni mesure du corpus réel PC.
 
 - **A1 reste partiel et ouvert** : les 9 tests multiprocessus du verrou passent, mais les limites coopératives précédemment documentées restent valables. Ni reprise automatique ni atomicité face au retrait externe d'un verrou. Un SIGKILL laisse le verrou ; son retrait manuel exige l'arrêt coordonné de tous les utilisateurs du corpus, jamais une simple décision fondée sur le PID.
@@ -57,7 +59,7 @@ env -u NODE_OPTIONS timeout 180s npm test
 
 A1 et les exigences composites encore non entièrement démontrées ; mémoire/coûts et limites des parcours raw/read complets ; plan SQL et mesures sur le volume PC réel ; lot B (CLI réel puis MVP MCP/client) ; lot C conditionnel ; ordre d'archivage pi/scale. Aucun change n'est clos ou archivé. Pas de garantie de résistance à une panne matérielle ou de disponibilité permanente pendant une publication. `recover` seul ne ramasse pas les temporaires orphelins et retire le marqueur : une ingestion ultérieure sans marqueur ne déclenche donc pas ce balayage. Le cas recover avec temporaires résiduels reste à traiter/valider ; les deux scénarios recover exercés ici n'en laissent pas. Le nettoyage validé ci-dessus est celui d'une relance avec sources sous marqueur non réconcilié.
 
-Les sections suivantes sont le bilan HISTORIQUE antérieur à cette validation PC : leurs résultats restent datés, et leurs mentions « à reprendre » ne remplacent pas le présent point de reprise.
+Les sections marquées « historique » conservent leurs résultats datés ; la validation A1 PRoot ci-dessous est distincte du bilan PC. Les anciennes mentions « à reprendre » ne remplacent pas la reprise opérationnelle actuelle.
 
 ## Livré dans la passe corrective — historique
 
@@ -67,10 +69,74 @@ Les sections suivantes sont le bilan HISTORIQUE antérieur à cette validation P
 - Vue absente/périmée : repeuplée depuis le corpus avant le delta. FTS incrémental uniquement sur vue utilisable ; sinon rebuild FTS unique en fin de passe (évite les suppressions FTS d'entrées jamais indexées).
 - Rebuild depuis source : ne recharge pas l'archive v1 conservée après migration.
 - Compteurs : arithmétiques en passe normale ; recomptés en réparation/réconciliation (le replay post-COMMIT ne compte pas comme un nouvel insert). recover réécrit aussi les comptes.
-- buildView refuse le marqueur non réconcilié, recover prend le verrou. Verrou wx/PID : plus de reprise sur âge seul ni sur EPERM. La reprise sur ESRCH a ensuite été **retirée** au lot A1 (lire le PID puis retirer le fichier n'est pas atomique) — refus conservateur de tout verrou ambigu ; retrait manuel seulement après arrêt coordonné de tous les utilisateurs du corpus. Ce n'est pas un flock (best effort coopératif, non atomique).
+- buildView refuse le marqueur non réconcilié, recover prend le verrou. Verrou wx/PID : plus de reprise sur âge seul ni sur EPERM. La reprise sur ESRCH a ensuite été **retirée** au lot A1 (lire le PID puis retirer le fichier n'est pas atomique) — refus conservateur de tout verrou ambigu ; retrait manuel seulement après arrêt coordonné de tous les utilisateurs du corpus. Ce n'est pas un flock. **Remplacé au lot A1 (01/10/2026)** : le wx/PID puis le protocole « répertoire » (réfuté R1/R2) sont remplacés par un verrou noyau `better-sqlite3` (`locking_mode=EXCLUSIVE`), fichier jamais supprimé, trace commitée pour le refus conservateur — voir « Validation A1 PRoot du 01/10/2026 ».
 - Nettoyage des temporaires seulement en réconciliation ; double fermeture corrigée dans streamLines quand le callback arrête la lecture.
 
-## Lot A1 — exclusion des écrivains : correctif du verrou, couverture PARTIELLE (case A1 laissée ouverte)
+## Validation A1 PRoot du 01/10/2026 — verrou noyau `better-sqlite3` (SOLDÉ)
+
+**Décision.** Le protocole « répertoire `mkdir` + fichier propriétaire unique » (réfuté ci-dessous) est écarté. Le mécanisme retenu est un **verrou noyau SQLite** porté par `better-sqlite3` — **déjà une dépendance du projet** (`src/corpus.js`), donc **aucune dépendance nouvelle** à installer — avec **refus conservateur**, conformément aux specs A1/A3 (« pas de reprise automatique », verrou ambigu refusé). Aucune installation n'a été nécessaire.
+
+**Mécanisme (`src/lock.js`).** `.ingest-lock` est une base SQLite dédiée, **jamais supprimée par le protocole**. `acquire()` : `busy_timeout=0`, `locking_mode=EXCLUSIVE`, `BEGIN EXCLUSIVE … COMMIT` — la connexion **conserve le verrou exclusif noyau** tant qu'elle est ouverte, donc l'acquisition est atomique (un second processus reçoit `SQLITE_BUSY` et refuse). Une **trace propriétaire commitée** (`lock_owner`) est lue sous le verrou : présente alors que le verrou noyau est libre ⇒ état ambigu (propriétaire mort/illisible) ⇒ **refus conservateur**, jamais de reprise automatique. `release()` supprime la trace puis ferme la connexion (le noyau libère). Un SIGKILL libère le verrou noyau à la mort du processus ; la relance ne refuse **que** si une trace commitée subsiste ou si l’init est ambigu — voir « Frontières d’arrêt brutal » ci-dessous (un crash pendant `release` après le COMMIT du DELETE laisse un état libre légitime). Reprise opérateur : retirer le fichier de verrou (et ses annexes `-journal`/`-wal`/`-shm`) **après arrêt coordonné**, jamais sous concurrence.
+
+**Preuves — `test/lock-concurrency.test.js` (13 tests ciblés, dont des scénarios multiprocessus à barrières IPC sans délai de synchronisation) + `test/helpers/lock-child.js` :**
+- **artefact ambigu refusé, intact** : répertoire, fichier **vide**, fichier illisible, **symlink** (cible inchangée), **base SQLite étrangère** (octets inchangés) ⇒ refus, aucune écriture de structure, aucun remplissage ;
+- **course de première initialisation** : deux processus sur un chemin absent ⇒ un seul crée/initialise, l’autre refuse sans toucher ; trace du vainqueur commitée et intacte ; une barrière ajoutée à la revue suspend le créateur après réservation `wx`, avant initialisation : le concurrent refuse et laisse le fichier vide inchangé ;
+- **schéma exact** vérifié à la revue : une table homonyme sans les contraintes attendues ou une base avec table étrangère supplémentaire est refusée octet pour octet ;
+- propriétaire vivant réel ⇒ `SQLITE_BUSY`, refus ; reprise après `release` ; le **fichier de verrou n’est jamais supprimé** ;
+- propriétaire mort (sortie enfant observée) ⇒ noyau libéré mais **trace commitée** ⇒ refus conservateur ; le concurrent n’efface pas la trace d’autrui ; reprise opérateur explicite ;
+- deux repreneurs sur trace périmée ⇒ les deux refusent, trace intacte ;
+- contention à 3 processus ⇒ exactement une acquisition, un seul `BEGIN`/`END` ;
+- `acquire` idempotent ; **seconde instance du même process refusée** ; sa fermeture (jamais détentrice) ne libère pas le premier, vérifié aussi par un **concurrent tiers** ; la libération ne supprime jamais le fichier ;
+- **échec d’init (`CREATE TABLE`) ou de `COMMIT`** ⇒ refus, **aucune connexion conservée** (`held:false`), artefact laissé conservateur (ambigu) puis refusé ;
+- **entrelacement de libération** : barrière **avant** release (refus tant que le verrou noyau est tenu) et barrière **après le COMMIT du DELETE, avant close** (refus malgré la trace effacée ; état libre après fermeture) ;
+- ingestion concurrente réelle ⇒ refus explicite, `state.json` inchangé, aucun marqueur.
+
+**Compatibilité / dépendance :** `better-sqlite3` 13.0.3, binaire **prébuild** `linux-arm64` déjà installé (Node 24 ABI 137) — aucune compilation, aucune installation, aucun changement de `package.json`.
+
+**Commandes/résultats (01/10/2026, Linux aarch64 PRoot, Node 24.19.0) :**
+```sh
+env -u NODE_OPTIONS timeout 150s node --test test/lock-concurrency.test.js              # 12/12
+env -u NODE_OPTIONS timeout 200s node --test test/lock-archive.test.js test/repair.test.js  # 20/20
+env -u NODE_OPTIONS timeout 300s node --test test/crash-real.test.js                    # 17/17
+env -u NODE_OPTIONS timeout 200s node --test test/snapshot-real.test.js                 # 9/9
+env -u NODE_OPTIONS timeout 500s npm test                                               # 280/280, 0 échec, 0 ignoré
+```
+
+**Revue et validation indépendantes (parent, Debian PRoot).** Le protocole répertoire a été rejeté, le contrat de refus des fichiers vides restauré, le schéma durci (définition exacte, aucun objet étranger) et la fenêtre réservation → initialisation testée avec une barrière IPC. Sémantique `locking_mode=EXCLUSIVE` recoupée avec la documentation officielle SQLite : les verrous persistent après transaction jusqu'à fermeture de la connexion. Après ces derniers changements :
+
+```sh
+env -u NODE_OPTIONS timeout 400s node --test --test-reporter=tap test/*.test.js
+# 281/281, 0 échec, 0 ignoré ; environ 84,6 s (fixtures, pas un banc)
+openspec validate scale-corpus --strict --no-interactive
+openspec validate --specs --changes --strict --no-interactive
+# change valide et validation globale 6/6
+git diff --check
+# OK
+```
+
+Aucune ingestion privée, évaluation naturelle, installation ni validation sur volume PC réel. Le cas `recover` avec temporaires résiduels reste ouvert ; ni J-MCP ni les changes ne sont déclarés clos.
+
+**Limites honnêtes.** (1) Le noyau garantit l'exclusion **entre processus qui empruntent le verrou** ; un acteur qui **supprime le fichier de verrou hors protocole** casse l'exclusion (nouveau fichier = nouvel inode = second verrou possible) — chemin jamais emprunté par le protocole, hors contrat. (2) Aucune durabilité face à une panne matérielle. (3) `locking_mode=EXCLUSIVE` bloque aussi les **lectures** concurrentes de la base de verrou : les tests lisent la trace uniquement quand le verrou est libre (sinon existence + refus). (4) Mécanisme local (pas de multi-machine/NFS) ; journal `MEMORY` : pas d'annexe disque à interpréter, mais un crash en pleine écriture peut laisser un fichier ambigu, alors refusé conservativement.
+
+**Frontières d'arrêt brutal (pas de promesse « tout SIGKILL laisse une trace »).** Ce qui provoque un refus conservateur à la reprise, c'est **une trace commitée** ou **un état d'init ambigu** : (a) détenteur tué avant tout `release` (trace commitée présente) ⇒ refus ; (b) tué pendant `release` **avant** le COMMIT du DELETE (trace encore présente) ⇒ refus ; (c) tué pendant l'acquisition **avant** le COMMIT de la trace, avec schéma incomplet/vide ⇒ état ambigu ⇒ refus, jamais de remplissage ; (d) tué pendant `release` **après** le COMMIT du DELETE et **avant** la fermeture ⇒ état **LIBRE légitime** (la libération était engagée ; le noyau a libéré le verrou à la mort) ⇒ le détenteur suivant acquiert ; (e) tué pendant l'acquisition avant le COMMIT de la trace avec schéma complet et sans trace ⇒ le processus n'est jamais entré dans la section protégée ⇒ état **libre**. En clair : « fichier de verrou présent » n'implique pas « refus » — seule une trace commitée ou un init ambigu refuse.
+
+**Fichiers modifiés :** `src/lock.js`, `src/corpus.js`, `src/view.js`, `test/lock-concurrency.test.js`, `test/helpers/lock-child.js`, `test/lock-archive.test.js`, `test/crash-real.test.js`, `test/helpers/crash-child.js`, `test/snapshot-real.test.js`. Aucun corpus réel touché.
+
+### Pourquoi le protocole « répertoire + propriétaire unique » a été écarté (justification)
+
+**Revue parent du 01/10/2026.** Le protocole « répertoire `mkdir` + fichier propriétaire unique » (implémenté dans `src/lock.js`) **échoue au critère absolu** de A1. Deux courses ont été **reproduites déterministiquement** par barrières IPC (script de reproduction dédié, retiré après abandon du protocole ; pauses par message + lecture bloquante sur stdin, aucun délai de synchronisation) :
+
+- **R1 — `release`/`cleanupOwnDir` retire le répertoire d'un autre.** A détient le verrou ; retrait externe du répertoire de A ; B fait `mkdir` (répertoire vide) puis se met en pause avant d'écrire son owner ; A termine son `release` : `unlink(owner-A)` est un no-op, puis `rmdir(this.path)` **réussit sur le répertoire vide de B**. Résultat reproduit : le répertoire de B est supprimé, l'écriture de l'owner de B échoue `ENOENT`. Un processus a retiré le verrou d'un autre.
+- **R2 — le post-`stat` ne lie pas l'identité au `mkdir`.** A fait `mkdir` puis se met en pause avant son premier `stat` ; retrait externe du répertoire de A ; B acquiert (nouveau répertoire, owner-B) ; A reprend : son **premier `stat` lit l'identité du répertoire de B**, A écrit son owner dans ce répertoire, le second `stat` (même identité) valide. Résultat reproduit : **A et B détiennent ensemble** (deux fichiers owners dans le même répertoire). Le second `stat` compare l'identité du remplacement, pas celle du répertoire créé par A.
+
+Sortie observée sur cet environnement (Linux aarch64 PRoot, Node 24.19.0) : R1 → le répertoire de B est supprimé par le release de A, B échoue `ENOENT` ; R2 → A et B acquièrent tous deux, **2 fichiers owners** dans le même répertoire. Le script de reproduction, spécifique au protocole écarté, a été retiré une fois celui-ci abandonné ; le mécanisme retenu (verrou noyau) n'a pas ces fenêtres.
+
+Les tests ajoutés précédemment ne couvraient pas ces fenêtres : le test « retrait externe + réacquisition » installait le nouveau propriétaire **déjà pourvu de son owner** (donc `rmdir` → `ENOTEMPTY`, préservé) et ne pausait ni le `mkdir`→écriture de B, ni le `mkdir`→`stat` de A. Conclusion honnête : **aucune garantie absolue**, coche A1 retirée, aucun mécanisme path-only non prouvé déclaré sûr.
+
+**Options évaluées avant ce choix.** (1) `better-sqlite3` — **retenu**, aucun ajout (dépendance déjà présente, binaire prébuild) ; (2) `flock(2)` via `fs-ext` — dépendance native à installer, **pas de prebuild publié**, `node-gyp` absent du dépôt, toolchain Termux/PRoot aarch64 incertain (non retenu ; aucun paquet installé) ; (3) `flock(1)` système (util-linux) — primitive pilotée par un processus, cycle de vie/pipe à gérer, non retenu ; (4) socket Unix abstrait (`net`) — bind noyau atomique et sans fichier, mais API **asynchrone** (refonte de `buildView`/`recover`/`migrate`/`fingerprint`), non retenu. Aucune installation n'a été faite.
+
+
+### Historique — correctif PARTIEL précédent (avant remplacement du wx/PID)
 
 **Diagnostic.** L'implémentation précédente reprenait un verrou « périmé » en lisant le PID puis en retirant le fichier (`rmSync`) avant de recréer en `wx`. Ce n'est pas atomique : un repreneur peut retirer le verrou **fraîchement installé par un autre repreneur**, les deux croyant alors le détenir. Reproduction isolée (hors dépôt, deux enfants, fenêtre élargie) : les deux enfants voient le PID mort, B installe son verrou, A le retire puis installe le sien → **double propriété confirmée** (vérification `stale` = [true, true], fichier remplacé du PID de B par celui de A).
 
@@ -111,7 +177,7 @@ Suite complète, évaluation, bancs 100k/500k/1000× et campagne de crash/concur
 
 ## À reprendre — historique avant la validation PC du 01/10
 
-1. **Exclusion d'écrivains et publication** : le volet verrou wx/PID (races de reprise/release, vide/illisible, propriétaire vivant/mort, acquire/release) est **couvert partiellement au lot A1 — case laissée ouverte** (reprise automatique retirée, refus conservateur, best effort coopératif non atomique, tests multiprocessus — voir section dédiée). Restent : index/fingerprint/migration protégés contre une ingestion démarrant après leur contrôle initial (A2) ; réclamation sûre du verrou après arrêt brutal (A3) ; recyclage PID documenté comme risque résiduel ; erreurs après staging, nettoyage des connexions, publication d'une nouvelle vue et durabilité. L'exclusion d'écrivains reste un **contrat** (un seul écrivain, autres mutations échouent proprement) ; wx/PID reste une implémentation partielle, pas un flock. Un verrou ambigu est refusé conservativement ; pas de reprise automatique. Fingerprint est en lecture seule mais doit être protégé contre une mutation pendant son parcours.
+1. **Exclusion d'écrivains et publication** : le volet verrou est **soldé au lot A1 (01/10/2026)** — verrou noyau `better-sqlite3` (`locking_mode=EXCLUSIVE`), fichier jamais supprimé, trace propriétaire commitée pour le refus conservateur (voir « Validation A1 PRoot du 01/10/2026 »). Restent : erreurs après staging, nettoyage des connexions, publication d'une nouvelle vue et durabilité.
 2. **Mémoire/coûts restants** : cur.evs retient le delta d'une session entière ; sesTouched retient les sessions modifiées ; liste de renames et listShards proportionnelles au nombre de sessions. rawScan fait encore `.all()` sur jusqu'à un million de références (plafond silencieux), status énumère tous les raw. read complet matérialise une session. Décider bornes/streaming ; pas de promesse « mémoire indépendante partout » pour l'instant.
 3. **Source** : index `time_updated` non garanti — l'ingestion SHALL exprimer le filtre watermark comme une clause SQL sur la source, **avec un scan possible selon les index et le plan choisi par SQLite** : le coût de scan possible est explicité/mesuré, jamais une promesse de plan indexé inconditionnel ni une mutation implicite de la source. Ne pas modifier la source sans accord. Vérifier snapshot source et mises à jour/suppressions ; fusion des shards suppose ts stable pour un même id. La pagination 2 001 sessions a été vérifiée isolément ; ajouter un test durable dédié.
 4. **Preuves et erreurs** : avertissement de marqueur aussi sur recherche --raw ; ne pas casser le JSON avec un avertissement stdout. rawScan masque encore les erreurs de vue. Revoir refus de layout sur tous les chemins, exactitude de validation/migration et fraîcheur.
@@ -120,4 +186,4 @@ Suite complète, évaluation, bancs 100k/500k/1000× et campagne de crash/concur
 
 ## Reprise opérationnelle
 
-Lire d'abord le point « Validation PC du 01/10/2026 » ci-dessus et `git status` avant toute modification. Conserver les changements livrés en `6af37c7`, sans réécriture globale. A2–A4 sont validés sur fixtures ; A1 reste partiel et doit être traité ou arbitré explicitement avant de déclarer le lot A validé. Validation CLI réelle et MVP MCP restent soumis à un nouvel accord. Les données privées restent hors Git. Le présent recentrage ne modifie aucun code et n'autorise ni commit/push, ni démarrage, ni archivage implicite.
+Lire d'abord la **validation A1 PRoot du 01/10/2026** (section dédiée) et `git status` avant toute modification. Le bilan « Validation PC du 01/10/2026 » est **historique** (`6af37c7`, A1 alors partiel) : ne pas le réécrire. A1 est **soldé** par verrou noyau `better-sqlite3` (refus conservateur ; frontières d'arrêt brutal explicitées) ; A2–A4 restent validés sur fixtures. Validation CLI réelle et MVP MCP restent soumis à un nouvel accord. Les données privées restent hors Git. Aucun commit/push, démarrage ou archivage implicite.
