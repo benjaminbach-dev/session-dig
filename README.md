@@ -63,6 +63,65 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 - **Orphelines hors scan `--raw`** : preuves non référencées par un événement (exécution directe hors agent), lisibles par `sdig raw pi:<sessionId>:<id>` explicite et signalées à l'ingestion.
 - **Lignes finales non terminées** (session pi vivante) : différées à la passe suivante — jamais acquittées partiellement.
 
+## MCP — lot M1a livré (contrats seuls, 01/10/2026)
+
+**Périmètre strict** : ce lot ne livre ni serveur, ni transport monté, ni handler
+`search`/`read`/`status` exécutable, ni fragmentation, ni validation de curseur, ni
+ingestion, ni `raw`, ni autostart. Le jalon M1 (« transport et contrat commun »)
+**reste incomplet**.
+
+- **SDK officiel épinglé** : `@modelcontextprotocol/sdk` `1.31.0` (version publiée
+  sur le registre npm officiel le 2026-09-28). Validation directe : `zod`
+  `3.25.76`, exact. Versions exactes dans `package.json`/`package-lock.json`
+  (installation locale seulement). API recoupée sur les déclarations du paquet
+  officiel installé (`server/mcp.d.ts`, `zod-compat.d.ts`,
+  `zod-json-schema-compat.js`, `inMemory.d.ts`, `client/index.d.ts`). Context7
+  était **indisponible** les 01/10/2026 (échec de connexion) : fallback assumé sur
+  npm + paquet installé ; à revérifier si Context7 redevient joignable.
+- **Contrats** (`src/mcp/`) : catalogue fermé `sdig_search`/`sdig_read`/`sdig_status`
+  (aucun `sdig_raw`) ; entrées Zod strictes (propriétés inconnues refusées,
+  `cursor` refusé sur search/status, `cursor` mêlé à une nouvelle requête read
+  refusé) ; bornes numériques entières sûres, epoch borné ; plafonds valides
+  ramenés avec `adaptations` explicites ; `ctx=0` admis, pages nulles refusées ;
+  source inconnue acceptée (zéro hit attendu) ; erreurs applicatives à **messages
+  figés par code** (le `message` libre d'une exception n'est jamais sérialisé, et
+  le `code` est revérifié contre la liste fermée — un code muté retombe sur
+  `internal`).
+- **Sortie search** décrit le contrat MCP (pas une copie du CLI) : hits typés
+  `message`/`title`, référence read obligatoire (un titre référence la **seule**
+  session, sans faux message), marqueur d'extrait, **voisins séparés** et
+  référencés au hit éclairé, groupement par session, `topK` explicite, `count`
+  réel des hits rendus et `total` inconnu à `null`. `nextCursor` est
+  structurellement refusé (racine et `truncated`) sans bloquer les champs additifs.
+  Champs de fidélité pi inchangés (limites exactes du format commun).
+- **Sortie read** : fragments avec `offset`/`end`/`complete` **obligatoires** au
+  contrat (unités fixées : **points de code Unicode**, `end` exclu, encodage UTF-8
+  déclaré ; limite 20 000 points de code), `adaptations`, `freshness` **présente
+  dans chaque réponse** (`indexMtime` nombre fini fractionnaire, `corpusVersion` =
+  version de schéma entière positive, `null` si inconnu — jamais inventé),
+  `truncated.nextCursor` réservé à read. L'implémentation de la
+  pagination/fragmentation est **M3**. Le curseur n'est qu'une **entrée opaque**
+  bornée : sa validation authentifiée (liaison outil/requête/génération) est **M3**
+  et n'est pas livrée ici.
+- **Status par source** : disponibilité, ingestion, watermark et compteurs
+  `{sessions, events}` par source **nullable** (inconnu = `null`, jamais estimé).
+- **Bornes temporelles search** : parité avec le CLI existant
+  (`parseDateBound`), **sans** promesse de validation calendaire stricte ; `at`
+  vide côté read donne `invalid_anchor` ; la validation d'ancre dans le contexte
+  d'une session est M3.
+- **Budget** : mesure UTF-8 d'enveloppe seulement (524 288 octets), aucune
+  fragmentation implémentée.
+- **Tests** : `test/mcp-contracts.test.js` (catalogue, compatibilité SDK avec
+  `McpServer`/`Client` réel via `InMemoryTransport` — stubs de handler locaux au
+  test, validation, descriptions, refus de `nextCursor`, confidentialité).
+
+**Obligation notée pour M1b** : les erreurs de protocole du SDK peuvent recopier
+les clés inconnues d'une entrée ; leur sanitisation doit être traitée en M1b — le
+seul Zod strict ne suffit pas à garantir l'absence d'écho.
+
+Détails de conception : [design add-mcp-server](openspec/changes/add-mcp-server/design.md)
+(D2/D3/D7/D8/D10) ; état d'avancement : [tasks](openspec/changes/add-mcp-server/tasks.md).
+
 ## Roadmap
 
 **Prochain jalon, recentré à la demande explicite de l'utilisateur : usage solo local validé sur PC.**

@@ -16,6 +16,14 @@
 
 ### M1 — Transport et contrat commun
 
+> **Lot M1a livré le 01/10/2026 — contrats seuls.** Le SDK officiel est vérifié et épinglé ; les schémas et descriptions des trois outils existent sous `src/mcp/`. Ce lot **ne monte pas** le transport Streamable HTTP et **n'exécute aucun** handler : les cases M1 ci-dessous restent donc largement incomplètes.
+>
+> - [x] Épingler le SDK MCP officiel : `@modelcontextprotocol/sdk` `1.31.0` (publié 2026-09-28, registre npm) + validation directe `zod` `3.25.76`. API recoupée sur le paquet installé et testée via `McpServer` + `Client` réel (`InMemoryTransport`). Context7 indisponible le 01/10/2026 (fallback npm/paquet documenté).
+> - [x] Contrats fermés `sdig_search`/`sdig_read`/`sdig_status` sous `src/mcp/` : entrées strictes utilisables par `McpServer.registerTool`, refus des propriétés inconnues et de `cursor` hors read, types/entiers sûrs/bornes/tailles, plafonds ramenés avec adaptations, `ctx=0` admis et pages nulles refusées.
+> - [x] Sorties décrites comme contrat MCP (hits typés message/titre, référence read obligatoire, voisins séparés, groupement, `topK`/`count`, `total` inconnu `null`, `nextCursor` refusé sur search), fragments read `offset`/`end`/`complete` au contrat (unités points de code Unicode, `end` exclu, UTF-8), `freshness` dans chaque réponse (`indexMtime` fini fractionnaire, `corpusVersion` entier de schéma), compteurs par source `null` si inconnus, fidélité pi aux valeurs exactes du format commun.
+> - [x] Descriptions des trois outils (secrets/fournisseur du modèle, contenu non fiable jamais exécuté, top-k sans curseur) ; erreurs applicatives à messages figés par code ; budget d'enveloppe 524 288 octets UTF-8.
+> - [ ] Fragmentation read (implémentation, tests de recollement) et validation authentifiée du curseur read : **M3, non livrés**.
+
 - [ ] Vérifier puis épingler le paquet/version du SDK MCP officiel et son transport Streamable HTTP.
 - [ ] Serveur sur `127.0.0.1:18767`, Host/Origin validés, token optionnel, aucun egress, SQLite en lecture seule, journaux sans contenu sur stderr par défaut. Aucun deuxième transport ni dépendance de lancement à Agora.
 - [ ] Catalogue fermé : `sdig_search`, `sdig_read`, `sdig_status` ; `sdig_raw` absent quelle que soit la configuration MVP.
