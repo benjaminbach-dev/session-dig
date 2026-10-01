@@ -17,6 +17,7 @@ import path from 'node:path'
 import { corpusPaths } from './paths.js'
 import { streamLines } from './util.js'
 import { listShards, assertLayout, ingestRunning } from './layout.js'
+import { CorpusLock, assertHeldLock } from './lock.js'
 
 export const SCHEMA = `
   CREATE TABLE meta(
@@ -210,7 +211,15 @@ export function checkFresh (root = corpusPaths().root, { db = null } = {}) {
     // retard, point. Un jeton n'a pas d'ordre — pour pi, l'égalité fait foi ;
     // opencode conserve ses epochs ORDONNABLES : vue en avance (crash entre COMMIT
     // et state.json) = état publié valide, tolérée ; vue en retard = refusée.
-    for (const [name, s] of Object.entries(sourceStatesOf(st))) {
+    const sources = sourceStatesOf(st)
+    // Première publication d'une source à jeton non ordonnable : sa ligne peut
+    // déjà être COMMITée alors qu'elle est encore absente de state.json.
+    for (const name of rows.keys()) {
+      if (name !== 'opencode' && !Object.hasOwn(sources, name)) {
+        return { fresh: false, reason: `vue en avance sur la source ${name} (jeton absent de l'état publié) — lancer \`sdig refresh\`` }
+      }
+    }
+    for (const [name, s] of Object.entries(sources)) {
       const row = rows.get(name)
       if (!row) {
         return { fresh: false, reason: `vue sans jeton de fraîcheur pour la source ${name} — lancer \`sdig refresh\`` }
@@ -245,11 +254,18 @@ export function eventCols (e) {
  * s'intercaler entre hits, voisins et compteurs — exactement le mélange de générations
  * que la spec interdit au sein d'une lecture. En WAL, une transaction de lecture
  * ouverte voit TOUJOURS le même snapshot, quelles que soient les publications
- * concurrentes, jusqu'à son COMMIT.
+ * concurrentes, jusqu'à son COMMIT. Les commandes passent aussi `root` pour
+ * revalider la fraîcheur dans ce snapshot avant d'exécuter leur callback.
  */
-export function inReadTx (db, fn) {
+export function inReadTx (db, fn, { root = null } = {}) {
   db.exec('BEGIN')
   try {
+    // openView a vérifié la fraîcheur avant BEGIN : une publication peut s'être
+    // intercalée depuis. Revalider le snapshot lui-même avant toute donnée rendue.
+    if (root != null) {
+      const fresh = checkFresh(root, { db })
+      if (!fresh.fresh) throw new Error(fresh.reason)
+    }
     const r = fn()
     db.exec('COMMIT')
     return r
@@ -367,35 +383,53 @@ export function populateView (db, root = corpusPaths().root) {
  * publié (shards partiellement remplacés) en référence, précisément ce que les specs
  * interdisent. La reprise explicite (`sdig ingest --recover`) passe duringRecovery :
  * c'est une décision d'opérateur, pas un défaut.
+ *
+ * Lot A2 : le verrou est acquis AVANT tout contrôle, parcours et mutation — le refus
+ * du marqueur et le retrait de l'index ont lieu SOUS verrou, libéré en finally sur
+ * succès, refus et erreur. duringRecovery ne désactive PAS le verrou : il ne dispense
+ * que du garde-fou marqueur (recover/migrate, opérateurs sous leur propre marqueur).
+ * Un verrou déjà détenu peut être TRANSMIS (`heldLock`) — recover/migrate — validé
+ * fortement (instance CorpusLock, effectivement détenue, chemin du verrou du corpus
+ * cible) : jamais un simple booléen `lock: true`, qui contournerait l'exclusion.
  */
-export function buildView (root = corpusPaths().root, { dbFile = viewPath(root), duringRecovery = false } = {}) {
-  if (!duringRecovery && ingestRunning(root)) {
-    throw new Error("ingestion en cours non réconciliée (marqueur présent) — relancer `sdig ingest` (réconciliation idempotente) ou `sdig ingest --recover` (reprise explicite) AVANT de reconstruire : un rebuild ne doit jamais faire d'un état non publié la référence")
-  }
+export function buildView (root = corpusPaths().root, { dbFile = viewPath(root), duringRecovery = false, heldLock = null } = {}) {
   const paths = corpusPaths(root)
-  for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true })
-  const db = openViewWrite(root, dbFile)
+  const own = heldLock == null
+  if (!own) assertHeldLock(heldLock, paths.lock)
+  const lock = own ? new CorpusLock(paths.lock) : heldLock
+  if (own && !lock.acquire()) {
+    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+  }
   try {
-    db.exec(SCHEMA)
-    let state = {}
-    try { state = JSON.parse(fs.readFileSync(paths.state, 'utf8')) } catch { state = {} }
-    if (state.layoutVersion != null) assertLayout(state)
+    if (!duringRecovery && ingestRunning(root)) {
+      throw new Error("ingestion en cours non réconciliée (marqueur présent) — relancer `sdig ingest` (réconciliation idempotente) ou `sdig ingest --recover` (reprise explicite) AVANT de reconstruire : un rebuild ne doit jamais faire d'un état non publié la référence")
+    }
+    for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`]) fs.rmSync(f, { force: true })
+    const db = openViewWrite(root, dbFile)
+    try {
+      db.exec(SCHEMA)
+      let state = {}
+      try { state = JSON.parse(fs.readFileSync(paths.state, 'utf8')) } catch { state = {} }
+      if (state.layoutVersion != null) assertLayout(state)
 
-    const count = populateView(db, root)
+      const count = populateView(db, root)
 
-    db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
+      db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`)
 
-    db.transaction(() => {
-      db.prepare('INSERT INTO meta (key, value) VALUES (?,?)').run('layoutVersion', '2')
-      for (const [name, s] of Object.entries(sourceStatesOf(state))) {
-        db.prepare('INSERT INTO watermark (source, token, message, session) VALUES (?,?,?,?)')
-          .run(name, s.token, s.message ?? null, s.session ?? null)
-      }
-    })()
-    db.pragma('wal_checkpoint(TRUNCATE)')
-    return { events: count, dbFile }
+      db.transaction(() => {
+        db.prepare('INSERT INTO meta (key, value) VALUES (?,?)').run('layoutVersion', '2')
+        for (const [name, s] of Object.entries(sourceStatesOf(state))) {
+          db.prepare('INSERT INTO watermark (source, token, message, session) VALUES (?,?,?,?)')
+            .run(name, s.token, s.message ?? null, s.session ?? null)
+        }
+      })()
+      db.pragma('wal_checkpoint(TRUNCATE)')
+      return { events: count, dbFile }
+    } finally {
+      db.close()
+    }
   } finally {
-    db.close()
+    if (own) lock.release()
   }
 }
 

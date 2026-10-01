@@ -133,7 +133,7 @@ const NON_TITLE = "role != 'title'"
 export function sessionSlice (root, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
   const db = openView(root)
   try {
-    return inReadTx(db, () => sessionSliceDb(db, sessionId, { aroundId, ctx, tail, at }))
+    return inReadTx(db, () => sessionSliceDb(db, sessionId, { aroundId, ctx, tail, at }), { root })
   } finally {
     db.close()
   }

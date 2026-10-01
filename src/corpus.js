@@ -22,8 +22,12 @@ import { atomicWrite, streamLines, ensureDir, md5File } from './util.js'
 import { corpusPaths, sourceDb, sourcePi } from './paths.js'
 import { shardPath, rawShardPath, assertLayout, LAYOUT_VERSION, markerPath, ingestRunning } from './layout.js'
 import { viewPath, openViewWrite, buildView, eventCols, viewUsableForIngest, populateView, SCHEMA, sourceStatesOf, ocTokenOf, piTokenOf } from './view.js'
+import { CorpusLock } from './lock.js'
 
 export { markerPath, ingestRunning }
+// CorpusLock extrait dans src/lock.js (lot A2, sans cycle) — réexporté pour compat
+// avec les importations existantes (tests, helpers enfant du verrou).
+export { CorpusLock }
 
 function readState (p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
@@ -35,61 +39,8 @@ const evSort = (a, b) => {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-// ── Verrou consultatif contre ingestions concurrentes (passe corrective 20/09, revue).
-// Création exclusive (`wx` = O_CREAT|O_EXCL) : l'acquisition est atomique. La reprise
-// AUTOMATIQUE d'un verrou périmé a été RETIRÉE (revue A1) : lire le PID puis retirer
-// le fichier n'est pas atomique vis-à-vis des autres repreneurs — un repreneur pouvait
-// supprimer le verrou tout neuf d'un propriétaire vivant. Un verrou ambigu (périmé ou
-// non) est donc REFUSÉ conservativement. Le retrait manuel éventuel n'est légitime
-// qu'après arrêt coordonné de TOUS les utilisateurs du corpus — jamais sous concurrence.
-// Ce mécanisme n'est PAS un flock : toutes ses garanties sont un effort COOPÉRATIF
-// (best effort), sans atomicité face à un retrait externe du fichier ; le recyclage de
-// PID reste un risque résiduel, documenté, jamais présenté comme sûr.
-export class CorpusLock {
-  constructor (lockPath) { this.path = lockPath; this.fd = null }
-  acquire () {
-    if (this.fd != null) return true // best effort : déjà détenu par cette instance (un retrait externe peut avoir orphelinisé le fd ; aucune atomicité n'est promise)
-    let fd
-    try {
-      fd = fs.openSync(this.path, 'wx') // atomique : un seul créateur possible
-    } catch {
-      // EEXIST (verrou pris, vide, illisible, ou répertoire) ou toute autre erreur
-      // d'ouverture : refus conservateur, sans jamais toucher au fichier d'autrui.
-      this.fd = null
-      return false
-    }
-    try {
-      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + '\n')
-    } catch (e) {
-      // Échec APRÈS création : nettoyage best effort. À cet instant nous étions le
-      // créateur exclusif, mais la fermeture puis le retrait ne sont pas atomiques
-      // face à un retrait externe + réacquisition : cette voie suppose des acteurs
-      // coopératifs. On propage l'erreur sans laisser de descripteur ni de fichier.
-      try { fs.closeSync(fd) } catch {}
-      try { fs.rmSync(this.path, { force: true }) } catch {}
-      this.fd = null
-      throw e
-    }
-    this.fd = fd
-    return true
-  }
-  release () {
-    if (this.fd == null) return
-    // Best effort coopératif : ne retirer le fichier que s'il est encore le nôtre
-    // ((dev, ino) comparés au descripteur). Ce n'est PAS atomique : entre le stat et
-    // le rm, un retrait externe suivi d'une réacquisition par un acteur non
-    // coopératif peut encore se glisser. Aucune garantie absolue n'est promise.
-    let own = false
-    try {
-      const fdStat = fs.fstatSync(this.fd)
-      const pathStat = fs.statSync(this.path)
-      own = fdStat.dev === pathStat.dev && fdStat.ino === pathStat.ino
-    } catch { own = false }
-    try { fs.closeSync(this.fd) } catch {}
-    this.fd = null
-    if (own) { try { fs.rmSync(this.path, { force: true }) } catch {} }
-  }
-}
+// ── CorpusLock vit désormais dans src/lock.js (lot A2) : module partagé sans cycle,
+// importé aussi par view.js (buildView). Réexporté ci-dessus pour compat.
 
 // ── Marqueur persistant d'ingestion en cours : posé AVANT tout remplacement de
 // fichier, retiré en tout dernier (après state.json). Un crash après le dernier
@@ -112,16 +63,23 @@ export function proofWarning (root = corpusPaths().root) {
  */
 export function recover (root = corpusPaths().root) {
   const paths = corpusPaths(root)
-  if (!ingestRunning(root)) {
-    return { done: false, note: "aucun marqueur d'ingestion en cours — rien à réconcilier" }
-  }
+  // Lot A2 : le verrou est acquis AVANT tout contrôle, parcours et mutation — le
+  // test du marqueur (y compris son no-op sans marqueur) a lieu SOUS verrou, libéré
+  // en finally sur succès, no-op et erreur. recover reste le SEUL parcours
+  // explicitement autorisé sous son marqueur.
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
     throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
+    if (!ingestRunning(root)) {
+      return { done: false, note: "aucun marqueur d'ingestion en cours — rien à réconcilier" }
+    }
     const st = readState(paths.state)
-    const { events } = buildView(root, { duringRecovery: true })
+    // Verrou DÉJÀ DÉTENU transmis à buildView (instance validée, jamais un booléen) :
+    // aucune double acquisition, aucun déverrouillage anticipé — le verrou reste
+    // détenu jusqu'à la fin de recover (comptes, état, retrait du marqueur).
+    const { events } = buildView(root, { duringRecovery: true, heldLock: lock })
     atomicWrite(paths.state, JSON.stringify({ ...st, counts: { events, sessions: countSessionsFile(paths.sessions) } }, null, 2) + '\n')
     fs.rmSync(paths.marker, { force: true })
     // watermark opencode affiché depuis la forme multi-source (repli : forme plate)
@@ -135,7 +93,16 @@ export function recover (root = corpusPaths().root) {
   }
 }
 
-/** Ramassage des temporaires orphelins (crash avant publication) à la passe suivante. */
+/** Noms temporaires produits par le protocole, jamais un motif interne d'id. */
+function isTemporaryCorpusFile (root, file) {
+  const rel = path.relative(root, file)
+  return /\.(jsonl|txt)\.new-\d+$/.test(rel) || /^index\.db\.new(?:-wal|-shm)?$/.test(rel) || /^state\.json\.tmp-\d+$/.test(rel)
+}
+
+/** Ramassage des temporaires orphelins à la passe suivante, sous verrou en
+ *  réconciliation : staging des shards/preuves/métadonnées, vue réparée et
+ *  écriture atomique de state.json. Un id canonique peut contenir `.tmp-` ou
+ *  `.new-` : seuls les suffixes et chemins temporaires connus sont retirés. */
 function sweepTemporaries (root) {
   const paths = corpusPaths(root)
   let n = 0
@@ -145,7 +112,7 @@ function sweepTemporaries (root) {
     for (const e of entries) {
       const p = path.join(dir, e.name)
       if (e.isDirectory()) walk(p)
-      else if (e.name.includes('.new-') || e.name.endsWith('.new')) { fs.rmSync(p, { force: true }); n++ }
+      else if (isTemporaryCorpusFile(root, p)) { fs.rmSync(p, { force: true }); n++ }
     }
   }
   walk(paths.root)
@@ -174,14 +141,17 @@ export async function ingest (opts = {}) {
   const dbPath = sourceDb(opts.db)
   const piPath = sourcePi(opts.piDir)
   const paths = corpusPaths(root)
+  // La RACINE seule est créée avant l'acquisition : le chemin du verrou doit être
+  // créable. raw/ (et tout le reste du corpus) est créé APRÈS acquisition — lot A2 :
+  // un refus du verrou ne crée rien dans le corpus.
   ensureDir(root)
-  ensureDir(paths.raw)
 
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) {
     throw new Error(`une ingestion est déjà en cours sur ce corpus (verrou consultatif ${paths.lock}) — réessayer une fois la première terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   }
   try {
+    ensureDir(paths.raw) // déplacé après acquisition (lot A2)
     return await _ingest(root, paths, dbPath, piPath, opts)
   } finally {
     lock.release()
@@ -702,24 +672,28 @@ function shardFlatRaws (paths) {
  */
 export async function migrate (root = corpusPaths().root) {
   const paths = corpusPaths(root)
-  const state = readState(paths.state)
-  if (state.layoutVersion === LAYOUT_VERSION) {
-    // déjà v2 : la reprise shardé les preuves brutes restées flat (idempotent —
-    // relancer ne modifie rien de plus), puis rien à faire.
-    const n = shardFlatRaws(paths)
-    return {
-      done: false,
-      note: `corpus déjà en layout v${LAYOUT_VERSION} — rien à faire${n ? ` (${n} preuve(s) brute(s) encore flat, shardée(s) maintenant)` : ''}`
-    }
-  }
-  if (!fs.existsSync(paths.events)) throw new Error('corpus v1 introuvable (events.jsonl absent) — rien à migrer')
-  if (ingestRunning(root)) {
-    throw new Error("ingestion en cours (marqueur présent) — réconcilier d'abord : relancer `sdig ingest` ou `sdig ingest --recover`")
-  }
-
+  // Lot A2 : verrou acquis AVANT l'état, les contrôles et les mutations — Y COMPRIS
+  // sur le chemin « déjà v2 » (shardFlatRaws renomme des fichiers de raw/). Refus du
+  // marqueur non réconcilié SOUS verrou : une migration ne s'applique jamais sur un
+  // état non publié ; recover reste le seul parcours autorisé sous un marqueur.
   const lock = new CorpusLock(paths.lock)
   if (!lock.acquire()) throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer plus tard. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
   try {
+    if (ingestRunning(root)) {
+      throw new Error("ingestion en cours non réconciliée (marqueur présent) — réconcilier d'abord : relancer `sdig ingest` ou `sdig ingest --recover`")
+    }
+    const state = readState(paths.state)
+    if (state.layoutVersion === LAYOUT_VERSION) {
+      // déjà v2 : la reprise shardé les preuves brutes restées flat (idempotent —
+      // relancer ne modifie rien de plus), puis rien à faire.
+      const n = shardFlatRaws(paths)
+      return {
+        done: false,
+        note: `corpus déjà en layout v${LAYOUT_VERSION} — rien à faire${n ? ` (${n} preuve(s) brute(s) encore flat, shardée(s) maintenant)` : ''}`
+      }
+    }
+    if (!fs.existsSync(paths.events)) throw new Error('corpus v1 introuvable (events.jsonl absent) — rien à migrer')
+
     fs.writeFileSync(paths.marker, JSON.stringify({ startedAt: new Date().toISOString(), pid: process.pid, op: 'migrate' }) + '\n')
 
     // comptes d'origine (vérification annoncée à l'issue)
@@ -765,7 +739,10 @@ export async function migrate (root = corpusPaths().root) {
     // vue reconstruite depuis le corpus v2 fraîchement écrit (watermark de state conservé)
     // duringRecovery : migrate est une commande opérateur tenant le verrou, son propre
     // marqueur est posé volontairement — le garde-fou buildView ne s'y applique pas.
-    buildView(root, { duringRecovery: true })
+    // Le verrou DÉJÀ DÉTENU est transmis à buildView (instance validée, jamais un
+    // booléen) : aucune double acquisition, aucun déverrouillage anticipé — libéré
+    // par le finally de migrate, en tout dernier, après état et retrait du marqueur.
+    buildView(root, { duringRecovery: true, heldLock: lock })
     const newState = {
       ...state,
       layoutVersion: LAYOUT_VERSION,
@@ -804,35 +781,47 @@ export async function migrate (root = corpusPaths().root) {
  * des modifications hors ingestion (ce que le watermark ne peut pas voir).
  * Fichiers dérivés (index.db et WAL, verrou) exclus : jetables, non corpus.
  * Refuse tant que le marqueur d'ingestion en cours est présent (état non réconcilié).
+ *
+ * Lot A2 : le verrou est acquis AVANT tout contrôle et parcours — le refus du
+ * marqueur et la marche de lecture ont lieu SOUS verrou, libéré en finally sur
+ * succès et erreur.
  */
 export function fingerprint (root = corpusPaths().root) {
-  if (ingestRunning(root)) {
-    throw new Error("ingestion en cours non réconciliée (marqueur présent) — l'empreinte ne peut pas faire foi sur un état non publié : relancer `sdig ingest` ou `sdig ingest --recover`")
-  }
   const paths = corpusPaths(root)
-  const DERIVED = /^(index\.db|\.ingest-lock)(-wal|-shm)?$/
-  const files = []
-  const walk = (dir, rel = '') => {
-    let entries
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      const r = rel ? `${rel}/${e.name}` : e.name
-      if (e.isDirectory()) walk(path.join(dir, e.name), r)
-      else if (!DERIVED.test(r) && !r.includes('.tmp-') && !r.includes('.new-')) files.push([r, path.join(dir, e.name)])
+  const lock = new CorpusLock(paths.lock)
+  if (!lock.acquire()) {
+    throw new Error(`une opération corpus est déjà en cours (verrou consultatif ${paths.lock}) — réessayer une fois terminée. Si son propriétaire est confirmé mort, retirer ce fichier manuellement UNIQUEMENT après arrêt coordonné de tous les utilisateurs du corpus, jamais sous concurrence`)
+  }
+  try {
+    if (ingestRunning(root)) {
+      throw new Error("ingestion en cours non réconciliée (marqueur présent) — l'empreinte ne peut pas faire foi sur un état non publié : relancer `sdig ingest` ou `sdig ingest --recover`")
     }
+    const DERIVED = /^(index\.db|\.ingest-lock)(-wal|-shm)?$/
+    const files = []
+    const walk = (dir, rel = '') => {
+      let entries
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const r = rel ? `${rel}/${e.name}` : e.name
+        if (e.isDirectory()) walk(path.join(dir, e.name), r)
+        else if (!DERIVED.test(r) && !isTemporaryCorpusFile(root, path.join(dir, e.name))) files.push([r, path.join(dir, e.name)])
+      }
+    }
+    walk(paths.root)
+    files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    const agg = crypto.createHash('md5')
+    const perFile = []
+    let bytes = 0
+    for (const [rel, abs] of files) {
+      const d = md5File(abs)
+      bytes += fs.statSync(abs).size
+      perFile.push({ file: rel, md5: d })
+      agg.update(rel); agg.update('\0'); agg.update(d); agg.update('\0')
+    }
+    return { fingerprint: agg.digest('hex'), files: perFile, bytes }
+  } finally {
+    lock.release()
   }
-  walk(paths.root)
-  files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-  const agg = crypto.createHash('md5')
-  const perFile = []
-  let bytes = 0
-  for (const [rel, abs] of files) {
-    const d = md5File(abs)
-    bytes += fs.statSync(abs).size
-    perFile.push({ file: rel, md5: d })
-    agg.update(rel); agg.update('\0'); agg.update(d); agg.update('\0')
-  }
-  return { fingerprint: agg.digest('hex'), files: perFile, bytes }
 }
 
 /**

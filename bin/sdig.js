@@ -400,6 +400,14 @@ async function main () {
   const db = openView(paths.root)
   try {
     const run = () => {
+      // Après validation de la fraîcheur du snapshot : les preuves (--raw, hors
+      // snapshot) peuvent être en avance sur la vue. En --json, seul stderr porte
+      // l'avertissement ; stdout reste un unique document JSON.
+      const warn = proofWarning(paths.root)
+      if (warn) {
+        if (flags.json) console.error(warn)
+        else console.log(warn)
+      }
       const hits = search(db, {
         q, repo: flags.repo, session: flags.session, after, before,
         model: flags.model, role: flags.role, agent: flags.agent,
@@ -432,7 +440,7 @@ async function main () {
       }
       return { hits }
     }
-    const { hits, done } = inReadTx(db, run)
+    const { hits, done } = inReadTx(db, run, { root: paths.root })
     if (done) return
     if (flags.raw) {
       // scan --raw HORS snapshot : il lit les fichiers de preuve (contenu, pas la

@@ -166,3 +166,48 @@ test('sans marqueur : read terminal n’affiche pas l’avertissement', () => {
   assert.equal(r.status, 0, r.stderr)
   assert.ok(!r.stdout.includes(WARN))
 })
+
+// ── A3 : la RECHERCHE signale aussi la publication non réconciliée (chemin preuves
+// en avance : hits d'index comme scan --raw hors snapshot) — convention read :
+// avertissement sur stdout en terminal, sur stderr en --json (stdout reste UN
+// document JSON valide). ──
+
+test('sans marqueur : search et search --raw n’affichent pas l’avertissement', () => {
+  clearMarker()
+  const plain = run(['revert', '--raw'])
+  assert.equal(plain.status, 0, plain.stderr)
+  assert.ok(!plain.stdout.includes(WARN))
+  assert.equal(plain.stderr, '')
+  const json = run(['revert', '--raw', '--json'])
+  assert.equal(json.status, 0, json.stderr)
+  assert.equal(json.stderr, '', 'aucun avertissement sans marqueur')
+  assert.doesNotThrow(() => JSON.parse(json.stdout))
+})
+
+test('marqueur : search --raw terminal → avertissement visible, hits bruts toujours rendus', () => {
+  setMarker()
+  try {
+    const r = run(['revert', '--raw'])
+    assert.equal(r.status, 0, r.stderr)
+    assert.ok(r.stdout.includes(WARN), 'avertissement visible sur stdout (terminal)')
+    assert.ok(r.stdout.includes('revert'), 'hits bruts toujours rendus')
+  } finally {
+    clearMarker()
+  }
+})
+
+test('marqueur : search --json → stdout JSON unique valide, avertissement sur stderr', () => {
+  clearMarker()
+  const base = JSON.parse(run(['proxy', '--json']).stdout)
+  setMarker()
+  try {
+    const r = run(['proxy', '--json'])
+    assert.equal(r.status, 0, r.stderr)
+    assert.ok(!r.stdout.includes(WARN), 'avertissement absent du JSON')
+    assert.ok(r.stderr.includes(WARN), 'avertissement toujours visible, routé sur stderr')
+    assert.doesNotThrow(() => JSON.parse(r.stdout))
+    assert.deepEqual(JSON.parse(r.stdout), base, 'hits et forme JSON inchangés')
+  } finally {
+    clearMarker()
+  }
+})
