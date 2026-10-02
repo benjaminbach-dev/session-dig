@@ -75,6 +75,9 @@ export function parseAnchorTimestamp (s) {
   return { ts }
 }
 
+/** Filtre PARTAGÉ : les lignes de titre synthétiques ne sont jamais des messages. */
+const NON_TITLE = "role != 'title'"
+
 /**
  * Résout une ancre — sur la vue (Database) ou sur des tableaux d'événements
  * (compat tests) — sémantique add-read-at/update-read-at inchangée :
@@ -82,6 +85,9 @@ export function parseAnchorTimestamp (s) {
  *   - un horodatage UTC (`YYYY-MM-DD`, `YYYY-MM-DDTHH:MM[:SS]`, avec espace), ou
  *     des millisecondes epoch (13 chiffres).
  * Retourne { ts, id } ou { error } — une ancre fausse doit se voir.
+ * Une ligne SYNTHÉTIQUE de titre (`role = 'title'`, id = id de session) n'est PAS un
+ * message : elle n'est jamais acceptée comme ancre (ni par id, ni par la recherche
+ * de la session d'appartenance).
  */
 export function resolveAnchor (evsOrDb, anchor, allEventsOrDb = null, sessionId = null) {
   const s = String(anchor ?? '').trim()
@@ -97,16 +103,16 @@ export function resolveAnchor (evsOrDb, anchor, allEventsOrDb = null, sessionId 
   // id de message
   const db = evsOrDb && typeof evsOrDb.prepare === 'function' ? evsOrDb : null
   if (db) {
-    const row = db.prepare('SELECT ts, session_id FROM events WHERE id = ?').get(s)
+    const row = db.prepare(`SELECT ts, session_id FROM events WHERE id = ? AND ${NON_TITLE}`).get(s)
     if (row && row.session_id === sessionId) return { ts: row.ts, id: s }
     if (row) return { error: `l'ancre ${s} appartient à la session ${row.session_id}, pas à ${sessionId}` }
     return { error: `ancre introuvable : ${s} (id de message de la session, date AAAA-MM-JJ[THH:MM] en UTC, ou epoch ms)` }
   }
   const evs = evsOrDb || []
-  const i = evs.findIndex(e => e.id === s)
+  const i = evs.findIndex(e => e.id === s && e.role !== 'title')
   if (i >= 0) return { ts: evs[i].ts, id: s, idx: i }
   const all = allEventsOrDb || []
-  const elsewhere = all.find(e => e.id === s)
+  const elsewhere = all.find(e => e.id === s && e.role !== 'title')
   if (elsewhere) {
     return { error: `l'ancre ${s} appartient à la session ${elsewhere.sessionId}, pas à ${evs[0].sessionId}` }
   }
@@ -115,11 +121,9 @@ export function resolveAnchor (evsOrDb, anchor, allEventsOrDb = null, sessionId 
 
 /** Rang d'un message dans sa session (ordre (ts, id), hors titres) — dénombrement indexé. */
 export function rankOf (db, sessionId, row) {
-  return db.prepare("SELECT COUNT(*) n FROM events WHERE session_id = ? AND role != 'title' AND (ts < ? OR (ts = ? AND id < ?))")
+  return db.prepare(`SELECT COUNT(*) n FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts < ? OR (ts = ? AND id < ?))`)
     .get(sessionId, row.ts, row.ts, row.id).n
 }
-
-const NON_TITLE = "role != 'title'"
 
 /**
  * Tranche d'une session par la vue (change scale-corpus) :
@@ -141,82 +145,161 @@ export function sessionSlice (root, sessionId, { aroundId, ctx = 10, tail, at } 
 
 /** Variante à Database ouverte : la transaction de lecture est portée par l'appelant. */
 export function sessionSliceDb (db, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
+  const w = resolveReadWindowDb(db, sessionId, { aroundId, ctx, tail, at })
+  if (!w) return null
+  // CLI : une session sans message (total 0) rend `null` (comportement préservé) ;
+  // `resolveReadWindowDb` la RECONNAÎT (objet) pour la future fidélité read vide.
+  if (w.total === 0) return null
+  const out = {
+    ses: w.ses,
+    events: [],
+    total: w.total,
+    spans: w.spans,
+    maxIdx: w.maxIdx,
+    maskedCount: w.maskedCount,
+    anchor: w.anchor
+  }
+  if (w.aroundIdx != null) out.aroundIdx = w.aroundIdx
+  if (w.fatal) { out.fatal = true; out.error = w.error; return out }
+  if (w.mode === 'empty' || w.mode === 'around-masked') { out.error = w.warning; return out }
+  if (w.mode === 'around' || w.mode === 'tail') { out.events = eventsForKeys(db, sessionId, w.keys); return out }
+  // mode 'all' : chargement intégral de la vue visible (fait de code du CLI, pas un
+  // contrat — la pagination keyset MCP passe par `pageKeys`).
+  out.events = eventsAllFor(db, sessionId, w.maxIdx)
+  if (w.warning) out.error = w.warning
+  return out
+}
+
+// ── M3b1 : primitives PARTAGÉES de fenêtre/pagination (métadonnées + clés) ───
+// `resolveReadWindowDb` lit UNIQUEMENT des métadonnées (méta de session, compteurs,
+// ancre via `resolveAnchor` partagé, mode/spans/rangs) et, pour `around`/`tail`, la
+// liste BORNÉE des clés `(ts, id)` — jamais de `json`/`text` d'événement, jamais de
+// session matérialisée. Le CLI la consomme pour rester identique ; le futur handler
+// MCP s'en servira pour la pagination keyset.
+
+/** Clés (ts, id) strictement avant une clé, ordre ascendant, ≤ n. */
+function keysBefore (db, sessionId, row, n) {
+  if (n <= 0) return []
+  return db.prepare(`SELECT ts, id FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?`)
+    .all(sessionId, row.ts, row.ts, row.id, n).reverse()
+}
+
+/** Clés (ts, id) strictement après une clé, ordre ascendant, ≤ n. */
+function keysAfter (db, sessionId, row, n) {
+  if (n <= 0) return []
+  return db.prepare(`SELECT ts, id FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts > ? OR (ts = ? AND id > ?)) ORDER BY ts, id LIMIT ?`)
+    .all(sessionId, row.ts, row.ts, row.id, n)
+}
+
+/** Clés des `n` derniers messages de la vue visible (borne ancre inclusive), ascendant. */
+function keysTail (db, sessionId, n, anchor) {
+  const bound = anchor ? ' AND ts <= @anchorTs' : ''
+  const sql = `SELECT ts, id FROM events WHERE session_id = @sid AND ${NON_TITLE}${bound} ORDER BY ts DESC, id DESC LIMIT @n`
+  const params = anchor ? { sid: sessionId, anchorTs: anchor.ts, n } : { sid: sessionId, n }
+  return db.prepare(sql).all(params).reverse()
+}
+
+/** Événements complets de la vue visible (≤ maxIdx+1), ordre (ts, id). */
+function eventsAllFor (db, sessionId, maxIdx) {
+  return db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} ORDER BY ts, id LIMIT ?`)
+    .all(sessionId, maxIdx + 1).map((r) => JSON.parse(r.json))
+}
+
+/** Événements complets d'une fenêtre CONTIGUË de clés, par bornes keyset inclusives. */
+function eventsForKeys (db, sessionId, keys) {
+  if (!keys.length) return []
+  const first = keys[0]
+  const last = keys[keys.length - 1]
+  return db.prepare(`SELECT json FROM events WHERE session_id = @sid AND ${NON_TITLE} AND (ts > @fts OR (ts = @fts AND id >= @fid)) AND (ts < @lts OR (ts = @lts AND id <= @lid)) ORDER BY ts, id`)
+    .all({ sid: sessionId, fts: first.ts, fid: first.id, lts: last.ts, lid: last.id })
+    .map((r) => JSON.parse(r.json))
+}
+
+/**
+ * Fenêtre de lecture RÉSOLUE, SANS événements complets. Retourne `null` si la
+ * session est inconnue. Sinon :
+ *   { ses, total, visible, maskedCount, anchor, maxIdx, spans, mode, keys,
+ *     aroundIdx, warning, fatal, error }
+ * `mode` ∈ 'all' | 'tail' | 'around' | 'around-masked' | 'empty' | 'fatal'.
+ * `keys` n'est rempli que pour `around`/`tail` (borné) ; `all` ne matérialise
+ * AUCUNE clé (pagination via `pageKeys`). `total === 0` reste un objet reconnu.
+ */
+export function resolveReadWindowDb (db, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
   const meta = db.prepare('SELECT json FROM sessions WHERE id = ?').get(sessionId)
   if (!meta) return null
   const ses = JSON.parse(meta.json)
 
-  // total de la session (hors lignes de titre) : dénombrement indexé
   const total = db.prepare(`SELECT COUNT(*) n FROM events WHERE session_id = ? AND ${NON_TITLE}`).get(sessionId).n
-  if (total === 0) return null
+
+  const base = { ses, total, visible: total, maskedCount: 0, anchor: null, maxIdx: total - 1, spans: [], mode: 'all', keys: [], aroundIdx: null, warning: null, fatal: false, error: null }
 
   const countUpTo = (ts) => db.prepare(`SELECT COUNT(*) n FROM events WHERE session_id = ? AND ${NON_TITLE} AND ts <= ?`).get(sessionId, ts).n
 
-  let view = { maxIdx: total - 1, maskedCount: 0, anchor: null }
-  // `at` fourni (même vide) n'est jamais ignoré : seul undefined/null = pas d'ancrage
+  // `at` est TOUJOURS validé, MÊME pour une session vide (total 0) : une date
+  // invalide, un id inconnu ou d'une AUTRE session est refusé (`fatal`) ; un
+  // horodatage valide expose l'ancre avec `maskedCount: 0` sur une vue vide — base
+  // de la future lecture pi vide fidèle. Le wrapper CLI garde `total 0 ⇒ null`.
   if (at != null) {
     const a = resolveAnchor(db, at, null, sessionId)
-    if (a.error) {
-      return { ses, events: [], total, spans: [], fatal: true, error: a.error, ...view }
-    }
+    if (a.error) return { ...base, spans: [], mode: 'fatal', fatal: true, error: a.error }
     const visible = countUpTo(a.ts)
-    view = {
-      maxIdx: visible - 1,
-      maskedCount: total - visible,
-      anchor: { id: a.id ?? null, ts: a.ts, date: fmtTs(a.ts), source: a.id ? 'message' : 'horodatage' }
-    }
+    base.visible = visible
+    base.maskedCount = total - visible
+    base.anchor = { id: a.id ?? null, ts: a.ts, date: fmtTs(a.ts), source: a.id ? 'message' : 'horodatage' }
+    base.maxIdx = visible - 1
   }
-  const last = view.maxIdx
-  const anchorLabel = view.anchor ? `${view.anchor.id ? `${view.anchor.id} ` : ''}(${view.anchor.date})` : ''
-
-  // ── fenêtres PAR CLÉ (passe corrective : OFFSET coûtait O(position)) ──
-  // La vue entière est un PRÉFIXE de l'ordre (ts, id) : les `last+1` plus petites
-  // clés sont exactement la vue visible (un message masqué a toujours une clé
-  // supérieure à celle de tout message visible). --tail part de la FIN de la vue
-  // visible — DESC borné par l'ancre, puis renversé. --around fetch ses prédécesseurs
-  // et successeurs immédiats autour de la clé du message, dans les limites des spans.
-  const evsAll = () => db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} ORDER BY ts, id LIMIT ?`)
-    .all(sessionId, last + 1).map(r => JSON.parse(r.json))
-
-  const evsBefore = (row, n) => db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?`)
-    .all(sessionId, row.ts, row.ts, row.id, n).map(r => JSON.parse(r.json)).reverse()
-
-  const evsAfter = (row, n) => db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} AND (ts > ? OR (ts = ? AND id > ?)) ORDER BY ts, id LIMIT ?`)
-    .all(sessionId, row.ts, row.ts, row.id, n).map(r => JSON.parse(r.json))
-
-  const evsTail = (n) => {
-    const bound = view.anchor ? ` AND ts <= ${Number(view.anchor.ts)}` : ''
-    return db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE}${bound} ORDER BY ts DESC, id DESC LIMIT ?`)
-      .all(sessionId, n).map(r => JSON.parse(r.json)).reverse()
-  }
+  const last = base.maxIdx
+  const anchorLabel = base.anchor ? `${base.anchor.id ? `${base.anchor.id} ` : ''}(${base.anchor.date})` : ''
 
   if (last < 0) {
-    return { ses, events: [], total, spans: [], ...view, error: `aucun message à ou avant l'ancre ${anchorLabel} — relire sans --at pour voir la session entière` }
+    return { ...base, spans: [], mode: 'empty', warning: at != null ? `aucun message à ou avant l'ancre ${anchorLabel} — relire sans --at pour voir la session entière` : null }
   }
 
   if (aroundId) {
-    const row = db.prepare('SELECT ts, id FROM events WHERE id = ? AND session_id = ?').get(aroundId, sessionId)
+    // Un id de ligne de TITRE n'est pas un message : jamais accepté comme `around`.
+    const row = db.prepare(`SELECT ts, id FROM events WHERE id = ? AND session_id = ? AND ${NON_TITLE}`).get(aroundId, sessionId)
     if (!row) {
-      return { ses, events: evsAll(), total, spans: [[0, last]], ...view, error: `message ${aroundId} introuvable dans ${sessionId} — ${at ? 'session bornée par l\'ancre' : 'session complète'} affichée` }
+      return { ...base, spans: [[0, last]], mode: 'all', warning: `message ${aroundId} introuvable dans ${sessionId} — ${at ? 'session bornée par l\'ancre' : 'session complète'} affichée` }
     }
     const idx = rankOf(db, sessionId, row)
     if (idx > last) {
-      return { ses, events: [], total, spans: [], aroundIdx: idx, ...view, error: `fenêtre demandée entièrement postérieure à l'ancre : ${aroundId} est masqué (ancre ${anchorLabel}) — relire sans --at pour voir la session entière` }
+      return { ...base, spans: [], mode: 'around-masked', aroundIdx: idx, warning: `fenêtre demandée entièrement postérieure à l'ancre : ${aroundId} est masqué (ancre ${anchorLabel}) — relire sans --at pour voir la session entière` }
     }
     const spans = mergeWindows(last + 1, [idx], ctx)
     const a = spans[0][0]
     const b = spans[spans.length - 1][1]
-    const before = evsBefore(row, Math.max(0, idx - a)) // prédécesseurs immédiats → [a, idx-1]
-    const theRow = [JSON.parse(db.prepare('SELECT json FROM events WHERE id = ?').get(aroundId).json)]
-    const after = evsAfter(row, Math.max(0, b - idx)) // successeurs immédiats → [idx+1, b]
-    return { ses, events: [...before, ...theRow, ...after], total, spans, aroundIdx: idx, ...view }
+    const keys = [
+      ...keysBefore(db, sessionId, row, Math.max(0, idx - a)),
+      { ts: row.ts, id: row.id },
+      ...keysAfter(db, sessionId, row, Math.max(0, b - idx))
+    ]
+    return { ...base, spans, mode: 'around', keys, aroundIdx: idx }
   }
 
   if (tail != null && last + 1 > tail) {
-    const evs = evsTail(tail)
-    const from = last + 1 - evs.length
-    return { ses, events: evs, total, spans: [[from, last]], ...view }
+    const keys = keysTail(db, sessionId, tail, base.anchor)
+    const from = last + 1 - keys.length
+    return { ...base, spans: [[from, last]], mode: 'tail', keys }
   }
-  return { ses, events: evsAll(), total, spans: [[0, last]], ...view }
+  return { ...base, spans: [[0, last]], mode: 'all' }
+}
+
+/**
+ * Page de CLÉS `(ts, id)` par KEYSET — jamais d'`OFFSET`. Au plus `limit` (plafonné
+ * à 200) clés, plus 1 « lookahead » pour savoir s'il reste une suite. Bornée
+ * optionnellement par l'ancre (`ts <= anchorTs`, inclusif). Aucun `json`/`text`
+ * chargé. La fragmentation (offsets en points de code) relève du lot suivant.
+ * `after` = clé `{ ts, id }` strictement dépassée, ou `null` pour repartir du début.
+ */
+export function pageKeys (db, sessionId, { after = null, limit = 200, anchorTs = null } = {}) {
+  const n = Math.max(1, Math.min(Number.isInteger(limit) ? limit : 200, 200))
+  const where = ['session_id = @sid', NON_TITLE]
+  const params = { sid: sessionId, n: n + 1 }
+  if (after) { where.push('(ts > @ats OR (ts = @ats AND id > @aid))'); params.ats = after.ts; params.aid = after.id }
+  if (anchorTs != null) { where.push('ts <= @anchorTs'); params.anchorTs = anchorTs }
+  const rows = db.prepare(`SELECT ts, id FROM events WHERE ${where.join(' AND ')} ORDER BY ts, id LIMIT @n`).all(params)
+  const hasMore = rows.length > n
+  return { keys: hasMore ? rows.slice(0, n) : rows, hasMore }
 }
 
 /**
