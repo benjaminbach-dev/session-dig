@@ -354,7 +354,7 @@ test('client MCP réél : search rendu, budget d’enveloppe respecté sur le fi
   const handlers = {
     sdig_search: createSearchHandler(mixed),
     sdig_read: async () => ({}),
-    sdig_status: async () => ({ counts: { sessions: 0, events: 0 }, rawFiles: 0, view: null, viewNote: null, sources: {}, freshness: { sources: {}, indexMtime: null, corpusVersion: null } })
+    sdig_status: async () => ({ counts: { sessions: 0, events: 0 }, rawFiles: null, rawReferences: 0, view: null, viewNote: null, sources: {}, freshness: { sources: {}, indexMtime: null, corpusVersion: null } })
   }
   const srv = createMcpTestServer({ handlers })
   await srv.start()

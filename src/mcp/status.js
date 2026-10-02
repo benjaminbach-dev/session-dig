@@ -11,9 +11,14 @@
 // Décisions de ce lot (documentées) :
 //  - La fraîcheur n'est PAS recalculée : `freshness` est l'objet construit par
 //    `data.js`, repris tel quel dans la sortie.
-//  - `rawFiles` est le compteur CONNU DE LA VUE (`rawrefs`), sans parcours
-//    arbitraire du répertoire `raw/` ; si ce compteur n'est pas disponible, la
-//    valeur est `null` (contrat élargi) plutôt qu'une estimation à 0.
+//  - `rawFiles` = nombre PHYSIQUE de fichiers de preuve brute : NON disponible
+//    sans parcours de `raw/` (interdit au MCP) et NON déductible de `rawrefs`
+//    (une preuve référencée peut manquer physiquement, un fichier orphelin peut
+//    être conservé par l'archive). Tant qu'aucun compteur physique fiable n'existe,
+//    la valeur est `null` explicite — jamais une estimation.
+//  - `rawReferences` = nombre EXACT de références de preuve dans la VUE
+//    (`rawrefs`), compteur connu de la vue ; `null` si la table est indisponible.
+//    C'est un compteur de RÉFÉRENCES, pas de fichiers.
 //  - `available` vaut `true`/`false`/`null` : `null` = accès non déterminable
 //    (ex. permission refusée), jamais converti en `false` inventé.
 //  - Vue absente/périmée : l'appel échoue en `view_unavailable` avec une raison
@@ -71,7 +76,10 @@ function buildStatus ({ view, freshness, availability, configured }) {
     // Les lignes de titre synthétiques sont exclues des compteurs d'événements (parité CLI).
     events: countRequired(view, "SELECT COUNT(*) AS n FROM events WHERE role != 'title'")
   }
-  const rawFiles = countOrNull(view, 'SELECT COUNT(*) AS n FROM rawrefs')
+  // `rawFiles` : nombre PHYSIQUE de fichiers — inconnu sans scan de `raw/` (interdit
+  // au MCP), donc `null` explicite. `rawReferences` : compteur EXACT de la VUE.
+  const rawFiles = null
+  const rawReferences = countOrNull(view, 'SELECT COUNT(*) AS n FROM rawrefs')
   // Comptes par source : source portée par le champ `source` du JSON, défaut opencode.
   const sessionsBySource = groupCountsOrNull(view, "SELECT COALESCE(json_extract(json, '$.source'), 'opencode') AS src, COUNT(*) AS n FROM sessions GROUP BY src")
   const eventsBySource = groupCountsOrNull(view, "SELECT COALESCE(json_extract(json, '$.source'), 'opencode') AS src, COUNT(*) AS n FROM events WHERE role != 'title' GROUP BY src")
@@ -102,6 +110,7 @@ function buildStatus ({ view, freshness, availability, configured }) {
   return {
     counts,
     rawFiles,
+    rawReferences,
     view: viewOut,
     viewNote: viewOut ? null : 'horodatage de vue indisponible',
     sources,

@@ -466,7 +466,7 @@ test('client MCP réel : read rendu, curseur enchaîné, enveloppe ≤ budget', 
   const handlers = {
     sdig_search: async () => ({}),
     sdig_read: createReadHandler(cfg),
-    sdig_status: async () => ({ counts: { sessions: 0, events: 0 }, rawFiles: 0, view: null, viewNote: null, sources: {}, freshness: { sources: {}, indexMtime: null, corpusVersion: null } })
+    sdig_status: async () => ({ counts: { sessions: 0, events: 0 }, rawFiles: null, rawReferences: 0, view: null, viewNote: null, sources: {}, freshness: { sources: {}, indexMtime: null, corpusVersion: null } })
   }
   const srv = createMcpTestServer({ handlers })
   await srv.start()

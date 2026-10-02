@@ -240,9 +240,13 @@ export const statusOutputSchema = z.object({
     sessions: safeInt.min(0),
     events: safeInt.min(0)
   }).passthrough(),
-  // Compteur de preuves brutes connu de la VUE ; `null` si indisponible (jamais
-  // estimé). Élargi depuis `safeInt.min(0)` au sous-lot status (null honnête).
+  // `rawFiles` = nombre PHYSIQUE de fichiers de preuve brute : NON disponible sans
+  // parcours de `raw/` (interdit au MCP) ⇒ `null` explicite, jamais estimé.
   rawFiles: safeInt.min(0).nullable(),
+  // `rawReferences` = compteur EXACT de RÉFÉRENCES de preuve dans la VUE (`rawrefs`) ;
+  // `null` si la table est indisponible. Distinct de `rawFiles` (une référence peut
+  // être physiquement absente, un fichier orphelin peut subsister).
+  rawReferences: safeInt.min(0).nullable(),
   view: z.object({ events: safeInt.min(0), mtime: z.number() }).passthrough().nullable(),
   viewNote: z.string().nullable(),
   sources: z.record(sourceStatusSchema),

@@ -115,6 +115,7 @@ const readEnvelope = {
 const statusEnvelope = {
   counts: { sessions: 2, events: 7 },
   rawFiles: 0,
+  rawReferences: 0,
   view: { events: 7, mtime: 1 },
   viewNote: null,
   sources: {

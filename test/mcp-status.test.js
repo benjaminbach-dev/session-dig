@@ -109,7 +109,10 @@ test('status nominal : compteurs globaux/par source, view, fraîcheur, aucun che
 
   const expected = viewCounts(rootPi)
   assert.deepEqual(out.counts, { sessions: expected.sessions, events: expected.events })
-  assert.equal(out.rawFiles, expected.rawrefs)
+  // `rawFiles` = compteur PHYSIQUE : indisponible sans scan de `raw/` ⇒ `null`.
+  assert.equal(out.rawFiles, null)
+  // `rawReferences` = compteur EXACT de la vue.
+  assert.equal(out.rawReferences, expected.rawrefs)
   assert.equal(out.view.events, out.counts.events)
   assert.ok(Number.isFinite(out.view.mtime))
   assert.equal(out.viewNote, null)
@@ -199,17 +202,62 @@ test('status : nom de source inconnu ignoré, jamais rendu', () => {
 
 // ── Compteurs honnêtes (vue connue / null) ──────────────────────────────────
 
-test('status : rawFiles connu de la vue ; compteur indisponible => null sans estimation', () => {
+test('status : rawFiles TOUJOURS null (compteur physique indisponible) ; rawReferences exact/null', () => {
   const nominal = createStatusHandler(cfg(root, { opencode: { path: dbPath } }))({}, [])
-  assert.equal(nominal.rawFiles, viewCounts(root).rawrefs)
+  assert.equal(nominal.rawFiles, null, 'aucun compteur physique fiable ⇒ null, jamais rawrefs')
+  assert.equal(nominal.rawReferences, viewCounts(root).rawrefs, 'références exactes de la vue')
 
   const noRefs = copyRoot(root)
   const db = new Database(viewPathOf(noRefs))
   try { db.exec('DROP TABLE rawrefs') } finally { db.close() }
   const out = createStatusHandler(cfg(noRefs, { opencode: { path: dbPath } }))({}, [])
   assert.ok(statusOutputSchema.safeParse(out).success)
-  assert.equal(out.rawFiles, null, 'compteur indisponible = null, jamais 0 estimé')
+  assert.equal(out.rawFiles, null)
+  assert.equal(out.rawReferences, null, 'table indisponible = null, jamais 0 estimé')
   assert.equal(out.counts.events, viewCounts(noRefs).events, 'compteurs globaux toujours connus')
+})
+
+test('status : rawFiles null malgré fichier orphelin AJOUTÉ ou preuve référencée SUPPRIMÉE', () => {
+  // Copies jetables : on mute `raw/` sans toucher au corpus partagé.
+  const withOrphan = copyRoot(root)
+  const rawDir = path.join(withOrphan, 'raw')
+  fs.mkdirSync(path.join(rawDir, 'ff'), { recursive: true })
+  fs.writeFileSync(path.join(rawDir, 'ff', 'orphelin-zzz.txt'), 'preuve orpheline')
+  const orphanOut = createStatusHandler(cfg(withOrphan, { opencode: { path: dbPath } }))({}, [])
+  assert.equal(orphanOut.rawFiles, null, 'fichier orphelin NON compté (pas de scan)')
+  assert.equal(orphanOut.rawReferences, viewCounts(root).rawrefs, 'références inchangées')
+
+  const missing = copyRoot(root)
+  const missingDir = path.join(missing, 'raw')
+  let removed = null
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(path.join(dir, e.name))
+      else if (e.name.endsWith('.txt') && removed == null) { removed = path.join(dir, e.name); fs.rmSync(removed) }
+    }
+  }
+  if (fs.existsSync(missingDir)) walk(missingDir)
+  const missingOut = createStatusHandler(cfg(missing, { opencode: { path: dbPath } }))({}, [])
+  assert.equal(missingOut.rawFiles, null, 'preuve physiquement absente : rawFiles reste null')
+  assert.equal(missingOut.rawReferences, viewCounts(root).rawrefs, 'référence conservée par la vue')
+})
+
+test('status : l’archive (shards, sessions, state, vue, raw) est INCHANGÉE par le handler', () => {
+  const r = copyRoot(rootPi)
+  const collect = (dir, out = []) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) collect(p, out)
+      else out.push(p)
+    }
+    return out
+  }
+  const before = new Map(collect(r).map((f) => [f, fs.readFileSync(f).toString('base64')]))
+  createStatusHandler(cfg(r, { opencode: { path: dbPath }, pi: { path: piDir } }))({}, [])
+  for (const [f, hash] of before) assert.equal(fs.readFileSync(f).toString('base64'), hash, `inchangé : ${f}`)
+  // Seules les annexes natives SQLite de la vue peuvent apparaître (décision WAL).
+  const added = collect(r).filter((f) => !before.has(f))
+  assert.ok(added.every((f) => f.endsWith('index.db-wal') || f.endsWith('index.db-shm')), `fichiers ajoutés inattendus : ${added.join(', ')}`)
 })
 
 test('status : comptes par source inconnus (JSON de session illisible) => null, globaux connus', () => {

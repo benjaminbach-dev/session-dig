@@ -26,7 +26,7 @@ const SECRET = 'sk-live-SUPER-SECRET-42'
 const freshness = { sources: {}, indexMtime: 123.456, corpusVersion: 2 }
 const searchOutput = (extra = {}) => ({ hits: [], neighbors: [], groups: [], count: 0, topK: 10, total: null, adaptations: [], freshness, ...extra })
 const readOutput = () => ({ sessionId: 's', title: null, repo: null, anchor: null, maskedCount: 0, visible: 0, total: 0, messages: [], adaptations: [], freshness })
-const statusOutput = () => ({ counts: { sessions: 0, events: 0 }, rawFiles: 0, view: null, viewNote: null, sources: {}, freshness })
+const statusOutput = () => ({ counts: { sessions: 0, events: 0 }, rawFiles: null, rawReferences: 0, view: null, viewNote: null, sources: {}, freshness })
 const okHandlers = () => ({ sdig_search: async () => searchOutput(), sdig_read: async () => readOutput(), sdig_status: async () => statusOutput() })
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms))
