@@ -60,6 +60,14 @@
 - [ ] Top-k sans pagination : ordre stable avec départage binaire des IDs complets avant sélection/regroupement ; aucun `cursor` accepté ni `nextCursor` émis. Décrire l'affinage par requête et filtres.
 - [ ] Budgets : hits prioritaires puis voisins ; coupures et réduction éventuelle sous `limit` explicites ; compte rendu exact, total inconnu = `null`, aucun comptage exhaustif obligatoire.
 
+> **Sous-lot search A (moteur partagé) livré le 01/10/2026 — M2 reste PARTIEL (façade search, voisins et budgets NON livrés ; aucun handler).** `src/retriever/bm25.js` corrigé selon D2/D3 ; CLI par défaut inchangé hors corrections de spec.
+>
+> - [x] Départage des rangs ÉGAUX par identifiant canonique complet en ordre binaire (`ORDER BY rank, e.id COLLATE BINARY`) AVANT `LIMIT` ; sélection top-k stable, testée sur >50 hits de rangs égaux multi-sources (opencode+pi, textes identiques synthétiques), limite appliquée après sélection et rejeu identique.
+> - [x] Filtre `session` en préfixe LITTÉRAL : `%`, `_`, `\` échappés avec `ESCAPE '\'` ; tests métacaractères (`%` non joker, `_` non joker simple-caractère, backslash littéral conservé).
+> - [x] Erreur d'entrée TYPÉE `SearchQueryError` (`code: 'no_terms'`, helper `isSearchQueryError`) pour une requête sans terme exploitable (stopwords/ponctuation) : une façade MCP future peut répondre `invalid_params` au lieu de `internal` ; messages et golden inchangés.
+> - [x] Option ADDITIVE `boundedText` (opt-in, défaut `false`, CLI inchangé) : ne charge PAS `e.text`/`e.cmd` complets (`textLen`/`cmdLen` en points de code) ; les extraits `snip`/`snipPlain`/`snipCmd` sont coupés DANS SQL à `MAX_BOUNDED_EXCERPT_CHARS` = 20 000 points de code (la borne `tokens` de FTS5 ne borne pas un token unique énorme) et `snipLen`/`snipPlainLen`/`snipCmdLen` portent leurs longueurs RÉELLES non bornées, pour une détection exacte de coupure ; projection CLI par défaut inchangée.
+> - [x] 8 tests synthétiques (`test/search-engine.test.js`), dont token unique > 60 000 caractères accentués entouré d'emoji/bornes et coupe dense en emoji astraux (extraits ≤ 20 000 points de code, `isWellFormed`, longueurs réelles supérieures). Constat local CIBLÉ : `node --test` moteur + search + CLI + multi-source + scan-context + MCP = **125/125**. Les 2 tests de **concurrence de verrou** antérieurement intermittents ont été diagnostiqués et corrigés — voir la section « Blocage hors MCP » ci-dessous (`npm test` local 394/394, **validation parent non revendiquée**). `git diff --check` propre ; OpenSpec `--all --strict` 6/6. **M2 non atteint.**
+
 ### M3 — Read et status
 
 - [ ] `sdig_read` sur la logique partagée : autour/ctx/tail/at, UTC et validation calendaire, masquage avant fenêtre, `anchor`/`maskedCount` et comptes CLI préservés.
@@ -84,6 +92,14 @@
 - [ ] Documenter l'absence de timeout applicatif garanti : tailles bornées ≠ durée SQL bornée ; timeout/déconnexion client ≠ arrêt du calcul ; pas de fausse annulation par `Promise.race`.
 - [ ] Aucune lecture directe des shards pour search/read ; status peut consulter l'état et la disponibilité des sources, sans ingérer leur contenu. Aucune réparation, indexation ou ingestion par le MCP.
 - [ ] Lancement, arrêt et reprise manuels ; fermeture des connexions à l'arrêt normal, aucun travail détaché survivant ; pas de service automatique.
+
+## Blocage hors MCP — course de première initialisation du verrou (corrigé)
+
+> **Blocage remonté par le parent (`npm test` 391/392, `test/lock-concurrency.test.js:179`, zéro acquéreur) puis corrigé. Section DISTINCTE : ni validation M2, ni validation parent. Les modifications search A restent intactes et séparables (bm25.js / search-engine.test.js).**
+>
+> - **Cause exacte (démontrée, pas supposée)** : sur chemin ABSENT, le créateur réserve le fichier (`open O_EXCL`, 0 octet) puis prend le verrou noyau. Un concurrent `EEXIST` ouvrait ce fichier de 0 octet en LECTURE (`hasValidSchema`) ; son verrou SHARED transitoire faisait échouer le `BEGIN EXCLUSIVE` du créateur (`busy_timeout=0`) → `SQLITE_BUSY` → le CRÉATEUR refusait aussi. Mécanisme reproduit en test (lecteur SHARED → `BEGIN EXCLUSIVE` = `SQLITE_BUSY`) ; traces instrumentées : `step3:SQLITE_BUSY` (créateur) + `schema-invalid:file` (concurrent), ~11 % (22/200).
+> - **Correctif minimal** (`src/lock.js`) : sur artefact existant de 0 octet, refus SANS ouvrir de connexion (un schéma commité pèse ≥ 8192 o, le 0 octet ne peut pas être valide). Aucun verrou pris, aucune écriture, sémantique conservatrice inchangée ; exclusion/sécurité non affaiblies ; aucun sleep ni synchronisation ajoutée.
+> - **Tests** : `test/lock-concurrency.test.js` gagne le test déterministe du mécanisme et une boucle de 40 essais sur chemins NEUFS (échoue AVANT correctif à l'essai 0, passe APRÈS). Constat local : `test/lock-concurrency.test.js` **15/15** sur 4 passes ; `npm test` **394/394** sur 2 exécutions locales consécutives. **Validation parent non revendiquée.**
 
 ## Validation MVP (contribue au jalon J-MCP)
 

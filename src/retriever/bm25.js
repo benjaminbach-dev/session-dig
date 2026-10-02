@@ -3,8 +3,11 @@
 // `index` opère DEPUIS LE CORPUS EN FLUX (rebuild de la vue) — l'ancienne signature
 // `index(events)` sur tableau matérialisé est retirée : l'interface ne permet plus
 // de forcer le chargement complet du corpus en mémoire. La sémantique de recherche
-// (stopwords, phrases pointées, OR pondéré, snippets, filtres) est strictement
-// conservée — les requêtes dorées ne bougent pas.
+// (stopwords, phrases pointées, OR pondéré, snippets, filtres) est conservée — les
+// requêtes dorées ne bougent pas — aux corrections de spec près (sous-lot search A) :
+// départage binaire des rangs égaux AVANT la limite, filtre `session` en préfixe
+// LITTÉRAL échappé, erreur d'entrée typée `SearchQueryError`, option opt-in
+// `boundedText` (extraits bornés sans charger `text`/`cmd` complets).
 import Database from 'better-sqlite3'
 import { buildView, viewPath, eventCols } from '../view.js'
 import { corpusPaths } from '../paths.js'
@@ -46,17 +49,61 @@ function ftsQuery (q, joiner = 'AND') {
     if (STOP.has(clean.toLowerCase())) continue
     terms.push(`"${clean}"`)
   }
-  if (!terms.length) throw new Error('requête vide ou sans termes exploitables (stopwords seuls ?)')
+  if (!terms.length) throw new SearchQueryError()
   return terms.join(` ${joiner} `)
 }
 
+// ── Erreur d'ENTRÉE de recherche (ensemble fermé) ───────────────────────────
+// `no_terms` : requête sans terme exploitable après retrait des stopwords. Une
+// façade (handler MCP) peut la distinguer d'un échec interne et répondre
+// `invalid_params` plutôt que `internal`, sans examiner le message. Aucune autre
+// entrée n'emprunte cette classe.
+export const SEARCH_ERROR_NO_TERMS = 'no_terms'
+export class SearchQueryError extends Error {
+  constructor (code = SEARCH_ERROR_NO_TERMS) {
+    super('requête vide ou sans termes exploitables (stopwords seuls ?)')
+    this.name = 'SearchQueryError'
+    this.code = code
+  }
+}
+export function isSearchQueryError (err) {
+  return err instanceof SearchQueryError
+}
+
 /**
- * search(view, { q, repo, session, after, before, model, role, agent, limit })
- * → hits ordonnés par rang BM25 (croissant = meilleur). `view` est un chemin de
- * base SQLite (compat CLI/tests) ou une Database déjà ouverte : une commande de
- * lecture multi-étapes (hits → voisins → compteurs) passe une Database unique et
+ * Préfixe LIKE LITTÉRAL : `%`, `_` et `\` sont échappés pour que le filtre
+ * `session` soit un vrai préfixe de chaîne (jamais un motif de joker), avec
+ * `ESCAPE '\'` dans la clause SQL.
+ */
+function likePrefix (value) {
+  return value.replace(/[\\%_]/g, '\\$&') + '%'
+}
+
+// Plafond de CARACTÈRES (points de code) des extraits en mode `boundedText`.
+// La borne `tokens` de `snippet()` ne borne PAS la longueur : un unique token
+// énorme (ex. 60 000 caractères) serait rendu entier, donc `substr` s'applique
+// CÔTÉ SQL, avant tout transfert vers Node. Aligné sur le plafond de texte par
+// message du design D3 (20 000 caractères).
+export const MAX_BOUNDED_EXCERPT_CHARS = 20000
+
+/**
+ * search(view, { q, repo, session, after, before, model, role, agent, source, limit, plain, boundedText })
+ * → hits ordonnés par rang BM25 (croissant = meilleur), départage des rangs
+ * ÉGAUX par identifiant canonique complet en ordre binaire (`e.id COLLATE BINARY`),
+ * AVANT la limite (sélection top-k stable). `view` est un chemin de base SQLite
+ * (compat CLI/tests) ou une Database déjà ouverte : une commande de lecture
+ * multi-étapes (hits → voisins → compteurs) passe une Database unique et
  * s'exécute ainsi dans une seule transaction de lecture (un seul snapshot —
  * aucune génération intercalée par une publication concurrente).
+ *
+ * `session` est un PRÉFIXE LITTÉRAL (métacaractères LIKE `%`/`_`/`\` échappés).
+ * `boundedText` (opt-in, défaut `false`, CLI compatible) : les colonnes `text` et
+ * `cmd` COMPLETES ne sont PAS chargées ; `textLen`/`cmdLen` en donnent les longueurs
+ * (points de code). Les extraits `snip`/`snipPlain`/`snipCmd` sont coupés DANS SQL
+ * à `MAX_BOUNDED_EXCERPT_CHARS` points de code (la borne `tokens` de FTS5 ne borne
+ * pas la longueur d'un token unique énorme), et `snipLen`/`snipPlainLen`/
+ * `snipCmdLen` portent leurs longueurs RÉELLES non bornées pour signaler la coupure
+ * exactement. Chemin CLI par défaut inchangé (colonnes et extraits non bornés).
  */
 export function search (view, query) {
   const own = typeof view === 'string'
@@ -73,7 +120,7 @@ export function search (view, query) {
     const where = ['events_fts MATCH @match']
     const base = { repo, session, after, before, model, role, agent, source }
     if (repo) { where.push('e.repo = @repo'); }
-    if (session) { where.push('e.session_id LIKE @session') }
+    if (session) { where.push("e.session_id LIKE @session ESCAPE '\\'") }
     if (after != null) { where.push('e.ts >= @after') }
     if (before != null) { where.push('e.ts <= @before') }
     if (model) { where.push('e.model LIKE @model') }
@@ -89,20 +136,46 @@ export function search (view, query) {
       where.push("COALESCE(json_extract(e.json, '$.source'), 'opencode') = @source")
     }
 
+    // Projection des textes : par défaut les colonnes complètes ; en mode borné
+    // (opt-in MCP) seules les LONGUEURS sont transférées, jamais `e.text`/`e.cmd`.
+    const boundedText = query.boundedText === true
+    const innerText = boundedText
+      ? 'length(e.text) AS textLen, length(e.cmd) AS cmdLen'
+      : 'e.cmd, e.text'
+    // En mode borné, `substr(..., @snipChars)` coupe les extraits DANS SQLITE et
+    // `length(...)` expose les longueurs RÉELLES (non bornées) de chaque extrait,
+    // pour qu'une façade puisse signaler la coupure exactement sans réestimer.
+    const outerProjection = boundedText
+      ? `id, session_id, ts, role, agent, repo, model, textLen, cmdLen, source,
+         substr(snip, 1, @snipChars) AS snip, length(snip) AS snipLen,
+         substr(snipPlain, 1, @snipChars) AS snipPlain, length(snipPlain) AS snipPlainLen,
+         substr(snipCmd, 1, @snipChars) AS snipCmd, length(snipCmd) AS snipCmdLen,
+         score`
+      : `id, session_id, ts, role, agent, repo, model, cmd, text, source,
+         snip, snipPlain, snipCmd, score`
+
+    // Sous-requête : les trois `snippet()` sont calculés UNE fois par ligne, puis
+    // bornés/jaugés dans la projection externe. Le tri binaire des rangs égaux
+    // s'applique APRÈS la fenêtre, AVANT la limite.
     const sql = `
-      SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model, e.cmd, e.text,
-             COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
-             snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
-             snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
-             snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,
-             rank AS score
-      FROM events e JOIN events_fts ON e.rowid = events_fts.rowid
-      WHERE ${where.join(' AND ')}
-      ORDER BY rank
+      SELECT ${outerProjection}
+      FROM (
+        SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
+               ${innerText},
+               COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
+               snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
+               snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
+               snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,
+               rank AS score
+        FROM events e JOIN events_fts ON e.rowid = events_fts.rowid
+        WHERE ${where.join(' AND ')}
+      )
+      ORDER BY score, id COLLATE BINARY
       LIMIT @limit`
 
     const params = { match, limit, open, close }
-    for (const k of Object.keys(base)) if (base[k] != null) params[k] = typeof base[k] === 'string' ? (k === 'session' ? `${base[k]}%` : (k === 'model' ? `%${base[k]}%` : base[k])) : base[k]
+    if (boundedText) params.snipChars = MAX_BOUNDED_EXCERPT_CHARS
+    for (const k of Object.keys(base)) if (base[k] != null) params[k] = typeof base[k] === 'string' ? (k === 'session' ? likePrefix(base[k]) : (k === 'model' ? `%${base[k]}%` : base[k])) : base[k]
     return db.prepare(sql).all(params)
   } finally {
     if (own) db.close()
