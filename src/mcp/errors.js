@@ -86,6 +86,7 @@ export function isMcpAppError (err) {
 
 export const invalidParams = () => new McpAppError('invalid_params')
 export const invalidCursor = () => new McpAppError('invalid_cursor')
+export const staleCursor = () => new McpAppError('stale_cursor')
 export const invalidAnchor = () => new McpAppError('invalid_anchor')
 export const viewUnavailable = (reason = null) => new McpAppError('view_unavailable', reason)
 export const unknownSession = () => new McpAppError('unknown_session')

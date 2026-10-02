@@ -191,6 +191,21 @@ export function scanTextFd (fd, needle, { chunkSize = CHUNK, onMatch } = {}) {
   return matches
 }
 
+/**
+ * Epoch ms UTC depuis des composantes, en PRÉSERVANT les années 0–99 (que
+ * `Date.UTC` mapperait silencieusement sur 1900–1999). `monthIndex` est 0-based.
+ * La normalisation (jour 0, mois 12, débordement) se fait DANS l'ANNÉE CIBLE : on
+ * part de `new Date(0)` et on pose `setUTCFullYear(y, monthIndex, day)` — jamais
+ * une année 2000 pivot dont `setUTCFullYear` normaliserait AVANT l'année cible
+ * (qui transformerait `(2027, 0, 0)` en 31/12/2027 au lieu de 31/12/2026).
+ */
+export function utcFromParts (y, monthIndex, day, h = 0, mi = 0, s = 0, ms = 0) {
+  const dt = new Date(0)
+  dt.setUTCFullYear(y, monthIndex, day)
+  dt.setUTCHours(h, mi, s, ms)
+  return dt.getTime()
+}
+
 // '2026' | '2026-06' | '2026-06-01' | ISO → borne ms. end=true → fin de période.
 export function parseDateBound (s, end = false) {
   if (!s) return null
@@ -200,18 +215,19 @@ export function parseDateBound (s, end = false) {
     const mo = m[2] ? +m[2] : null
     const d = m[3] ? +m[3] : null
     if (end) {
-      if (d) return Date.UTC(y, mo - 1, d, 23, 59, 59, 999)
-      if (mo) return Date.UTC(y, mo, 0, 23, 59, 59, 999)
-      return Date.UTC(y + 1, 0, 0, 23, 59, 59, 999)
+      if (d) return utcFromParts(y, mo - 1, d, 23, 59, 59, 999)
+      if (mo) return utcFromParts(y, mo, 0, 23, 59, 59, 999)
+      return utcFromParts(y + 1, 0, 0, 23, 59, 59, 999)
     }
-    return Date.UTC(y, mo ? mo - 1 : 0, d || 1)
+    return utcFromParts(y, mo ? mo - 1 : 0, d || 1)
   }
   const t = Date.parse(s)
   return Number.isNaN(t) ? null : t
 }
 
+/** Horodatage lisible UTC. `0` (epoch) est une date VALIDE, jamais `?`. */
 export function fmtTs (ms) {
-  if (!ms) return '?'
+  if (ms == null || !Number.isFinite(ms)) return '?'
   return new Date(ms).toISOString().slice(0, 16).replace('T', ' ')
 }
 

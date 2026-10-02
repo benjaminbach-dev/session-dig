@@ -24,7 +24,7 @@
 //     (ts, id) : coût O(fenêtre), quelle que soit la position. Les compteurs restent
 //     des dénombrements de plage indexés (coût documenté, mesuré au banc).
 import { openView, inReadTx } from './view.js'
-import { fmtTs } from './util.js'
+import { fmtTs, utcFromParts } from './util.js'
 
 /** Fusionne les fenêtres [i-ctx, i+ctx] autour des index de hits. */
 export function mergeWindows (length, hitIdxs, ctx) {
@@ -42,9 +42,14 @@ export function mergeWindows (length, hitIdxs, ctx) {
 const EPOCH_RE = /^\d{13}$/
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/
 
-/** Nombre réel de jours d'un mois (bissextiles incluses). */
+/** Bissextile PROLEPTIQUE (grégorienne), exacte pour les années 0–99 (année 0 bissextile). */
+function isLeapYear (y) {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
+}
+
+/** Nombre réel de jours d'un mois (bissextiles incluses), exact pour toutes les années. */
 function daysInMonth (y, mo) {
-  return new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  return [31, isLeapYear(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1]
 }
 
 /** Valide les composantes d'une date/heure (change update-read-at, design D2). */
@@ -70,13 +75,17 @@ export function parseAnchorTimestamp (s) {
   const sec = m[6] == null ? null : +m[6]
   const bad = validateParts({ y, mo, d, h, mi, s: sec })
   if (bad) return { error: `ancre invalide : ${s} (${bad})` }
-  // date seule = fin de journée : la journée demandée reste entièrement visible
-  const ts = h == null ? Date.UTC(y, mo - 1, d, 23, 59, 59, 999) : Date.UTC(y, mo - 1, d, h, mi, sec ?? 0)
+  // date seule = fin de journée : la journée demandée reste entièrement visible.
+  // `utcFromParts` préserve les années 0–99 (Date.UTC les mapperait sur 1900–1999).
+  const ts = h == null ? utcFromParts(y, mo - 1, d, 23, 59, 59, 999) : utcFromParts(y, mo - 1, d, h, mi, sec ?? 0)
   return { ts }
 }
 
 /** Filtre PARTAGÉ : les lignes de titre synthétiques ne sont jamais des messages. */
-const NON_TITLE = "role != 'title'"
+export const NON_TITLE = "role != 'title'"
+
+/** Défaut PARTAGÉ du contexte autour d'un hit (parité CLI) : `ctx` absent vaut 10. */
+export const DEFAULT_READ_CTX = 10
 
 /**
  * Résout une ancre — sur la vue (Database) ou sur des tableaux d'événements
@@ -134,7 +143,7 @@ export function rankOf (db, sessionId, row) {
  *   4. sémantique observable inchangée (spans, maxIdx, maskedCount, anchor,
  *      erreurs fatales — tests add-read-at repris tels quels).
  */
-export function sessionSlice (root, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
+export function sessionSlice (root, sessionId, { aroundId, ctx = DEFAULT_READ_CTX, tail, at } = {}) {
   const db = openView(root)
   try {
     return inReadTx(db, () => sessionSliceDb(db, sessionId, { aroundId, ctx, tail, at }), { root })
@@ -144,7 +153,7 @@ export function sessionSlice (root, sessionId, { aroundId, ctx = 10, tail, at } 
 }
 
 /** Variante à Database ouverte : la transaction de lecture est portée par l'appelant. */
-export function sessionSliceDb (db, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
+export function sessionSliceDb (db, sessionId, { aroundId, ctx = DEFAULT_READ_CTX, tail, at } = {}) {
   const w = resolveReadWindowDb(db, sessionId, { aroundId, ctx, tail, at })
   if (!w) return null
   // CLI : une session sans message (total 0) rend `null` (comportement préservé) ;
@@ -224,7 +233,7 @@ function eventsForKeys (db, sessionId, keys) {
  * `keys` n'est rempli que pour `around`/`tail` (borné) ; `all` ne matérialise
  * AUCUNE clé (pagination via `pageKeys`). `total === 0` reste un objet reconnu.
  */
-export function resolveReadWindowDb (db, sessionId, { aroundId, ctx = 10, tail, at } = {}) {
+export function resolveReadWindowDb (db, sessionId, { aroundId, ctx = DEFAULT_READ_CTX, tail, at } = {}) {
   const meta = db.prepare('SELECT json FROM sessions WHERE id = ?').get(sessionId)
   if (!meta) return null
   const ses = JSON.parse(meta.json)
