@@ -142,6 +142,16 @@ export function search (view, query) {
     const innerText = boundedText
       ? 'length(e.text) AS textLen, length(e.cmd) AS cmdLen'
       : 'e.cmd, e.text'
+    // Indicateurs EXACTS (opt-in) décidés CÔTÉ SQL, avant tout transfert : l'égalité
+    // STRICTE `snippet == colonne` (jamais une comparaison de longueurs — une
+    // ellipse FTS ou une fenêtre `tokens` peut tromper une longueur) et la variante
+    // `cmd` SANS marqueurs pour les hits à commande seule.
+    const innerExtra = boundedText
+      ? `,
+               snippet(events_fts, 1, '', '', '…', 14) AS snipCmdPlain,
+               CASE WHEN e.text IS NOT NULL AND snippet(events_fts, 0, '', '', '…', 14) = e.text THEN 1 ELSE 0 END AS snipFull,
+               CASE WHEN e.cmd IS NOT NULL AND snippet(events_fts, 1, '', '', '…', 14) = e.cmd THEN 1 ELSE 0 END AS snipCmdFull`
+      : ''
     // En mode borné, `substr(..., @snipChars)` coupe les extraits DANS SQLITE et
     // `length(...)` expose les longueurs RÉELLES (non bornées) de chaque extrait,
     // pour qu'une façade puisse signaler la coupure exactement sans réestimer.
@@ -149,6 +159,10 @@ export function search (view, query) {
       ? `id, session_id, ts, role, agent, repo, model, textLen, cmdLen, source,
          substr(snip, 1, @snipChars) AS snip, length(snip) AS snipLen,
          substr(snipPlain, 1, @snipChars) AS snipPlain, length(snipPlain) AS snipPlainLen,
+         CASE WHEN length(snipPlain) > @snipChars THEN 1 ELSE 0 END AS snipPlainCut,
+         snipFull,
+         substr(snipCmdPlain, 1, @snipChars) AS snipCmdPlain, length(snipCmdPlain) AS snipCmdPlainLen,
+         snipCmdFull,
          substr(snipCmd, 1, @snipChars) AS snipCmd, length(snipCmd) AS snipCmdLen,
          score`
       : `id, session_id, ts, role, agent, repo, model, cmd, text, source,
@@ -165,7 +179,7 @@ export function search (view, query) {
                COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
                snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
                snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
-               snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,
+               snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd${innerExtra},
                rank AS score
         FROM events e JOIN events_fts ON e.rowid = events_fts.rowid
         WHERE ${where.join(' AND ')}
@@ -180,4 +194,48 @@ export function search (view, query) {
   } finally {
     if (own) db.close()
   }
+}
+
+/** Ordre BINAIRE réel (octets UTF-8), identique à `COLLATE BINARY` de SQLite. */
+const binaryCompare = (a, b) => Buffer.compare(Buffer.from(String(a), 'utf8'), Buffer.from(String(b), 'utf8'))
+
+/**
+ * Voisins BORNÉS pour la façade search (MCP) : jusqu'à `ctx` prédécesseurs et
+ * `ctx` successeurs de CHAQUE hit dans SA session, par clé `(ts, id)` — jamais de
+ * session entière ni de JSON complet chargé. `text` est coupé DANS SQL (`substr`)
+ * et `textLen` porte sa longueur réelle en points de code. Retourne un tableau
+ * dédupliqué par `(session_id, id)` (un voisin commun à plusieurs hits n'apparaît
+ * qu'une fois, `forRef` = premier hit rencontré dans l'ordre des hits), ordonné en
+ * ordre BINAIRE OCTET (UTF-8, comme `COLLATE BINARY`) `(session_id, ts, id)` pour
+ * un résultat déterministe. `ctx <= 0` ou aucun hit ⇒ aucun voisin.
+ */
+export function searchNeighbors (view, hits, ctx, { excerptChars = MAX_BOUNDED_EXCERPT_CHARS } = {}) {
+  if (!Array.isArray(hits) || hits.length === 0 || !(ctx > 0)) return []
+  const columns = `e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
+      COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
+      COALESCE(substr(e.text, 1, @excerptChars), '') AS text,
+      COALESCE(length(e.text), 0) AS textLen`
+  const before = view.prepare(`SELECT ${columns} FROM events e
+    WHERE e.session_id = @sid AND e.role != 'title'
+      AND (e.ts < @ts OR (e.ts = @ts AND e.id < @id))
+    ORDER BY e.ts DESC, e.id DESC LIMIT @ctx`)
+  const after = view.prepare(`SELECT ${columns} FROM events e
+    WHERE e.session_id = @sid AND e.role != 'title'
+      AND (e.ts > @ts OR (e.ts = @ts AND e.id > @id))
+    ORDER BY e.ts, e.id LIMIT @ctx`)
+  const byKey = new Map()
+  for (const h of hits) {
+    const params = { sid: h.session_id, ts: h.ts, id: h.id, ctx, excerptChars }
+    const forRef = { sessionId: h.session_id, messageId: h.role === 'title' ? null : h.id }
+    for (const stmt of [before, after]) {
+      for (const nb of stmt.all(params)) {
+        const key = `${nb.session_id}\u0000${nb.id}`
+        if (!byKey.has(key)) byKey.set(key, { ...nb, forRef })
+      }
+    }
+  }
+  return [...byKey.values()].sort((a, b) =>
+    binaryCompare(a.session_id, b.session_id) ||
+    (a.ts - b.ts) ||
+    binaryCompare(a.id, b.id))
 }

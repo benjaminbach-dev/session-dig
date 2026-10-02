@@ -54,7 +54,10 @@ export const APP_ERROR_REASONS = Object.freeze({
     'async_callback',
     'unsupported_callback',
     'callback_failed',
-    'invalid_config'
+    'invalid_config',
+    // Représentation minimale d'un hit/groupe (ou de la réponse vide) supérieure au
+    // budget d'enveloppe : erreur bornée explicite plutôt que pages sans progrès.
+    'budget_exhausted'
   ])
 })
 

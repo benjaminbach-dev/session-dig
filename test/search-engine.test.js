@@ -59,6 +59,8 @@ before(async () => {
     addOpencodeMessage(db, { sesId: 'ses_us_x', msgId: 'msg_usx', text: 'metaprefix gamma', ts: T0 + 200002 })
     addOpencodeMessage(db, { sesId: 'ses_usYx', msgId: 'msg_usY', text: 'metaprefix delta', ts: T0 + 200003 })
     addOpencodeMessage(db, { sesId: 'ses_bs\\z', msgId: 'msg_bsz', text: 'metaprefix epsilon', ts: T0 + 200004 })
+    // Texte de plus de 14 tokens : la fenêtre FTS omet du texte (snipFull=0).
+    addOpencodeMessage(db, { sesId: 'ses_win', msgId: 'msg_win', text: 'a0 a1 a2 a3 a4 a5 a6 windowtarget a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18', ts: T0 + 400000, title: 'Fenêtre' })
     // Énorme token unique (accents) entouré d'emoji/bornes, et cas de coupe dense
     // en emoji astraux (frontières de points de code).
     addOpencodeMessage(db, { sesId: 'ses_huge', msgId: 'msg_huge', text: `avant 🙂 ${HUGE_TOKEN} 🙂 après`, ts: T0 + 300000, title: 'Géant accents' })
@@ -178,6 +180,30 @@ test('boundedText : extraits sans charger text/cmd complets, identiques au défa
   assert.ok(fullHit && boundedHit)
   assert.equal(boundedHit.textLen, [...fullHit.text].length)
   assert.equal(boundedHit.snip, fullHit.snip)
+})
+
+test('boundedText : indicateurs SQL exacts d’intégralité (snipFull, snipPlainCut, snipCmdPlain)', () => {
+  const rows = search(indexPath, { q: 'metaprefix', limit: 20, plain: true, boundedText: true })
+  const short = rows.find((h) => h.id === 'msg_pctpct')
+  assert.ok(short)
+  assert.equal(short.snipFull, 1, 'snippet == texte établi par ÉGALITÉ SQL')
+  assert.equal(short.snipPlainCut, 0)
+  assert.equal(short.snipPlain, 'metaprefix alpha')
+
+  const bound = search(indexPath, { q: 'starttoken', limit: 5, plain: true, boundedText: true })[0]
+  assert.equal(bound.snipPlainCut, 1, 'coupe SQL signalée AVANT transfert')
+  assert.ok([...bound.snipPlain].length <= MAX_BOUNDED_EXCERPT_CHARS)
+
+  // Fenêtre FTS ayant OMIS du texte : snipFull=0 (jamais déduit d’une longueur).
+  const win = search(indexPath, { q: 'windowtarget', limit: 5, plain: true, boundedText: true })[0]
+  assert.equal(win.snipFull, 0)
+  assert.ok(win.snipPlain.includes('…'), 'ellipse de fenêtre FTS')
+  assert.ok(win.snipPlainCut === 0 || win.snipPlainCut === 1)
+
+  // Variante commande sans marqueurs, disponible pour la façade (hit cmd seul).
+  assert.ok(Object.hasOwn(short, 'snipCmdPlain'))
+  assert.ok(Object.hasOwn(short, 'snipCmdPlainLen'))
+  assert.ok(Object.hasOwn(short, 'snipCmdFull'))
 })
 
 // ── Borne SQL des extraits : token unique énorme et frontières de points de code ──
