@@ -58,7 +58,12 @@ rendues (search/read, y compris une lecture vide à l'ancre).
   **points de code Unicode**, `end` **exclu**, encodage **UTF-8** déclaré. `chars`
   défaut **400**, `full` = **20 000** ; page ≤ **200 messages distincts** et
   ≤ **20 000 points de code** par message et par page ; réponse ≤ **524 288 octets**.
-  Le texte complet reste accessible par continuations.
+  Le **texte** ET les **commandes d'appels** sont fragmentés de façon bornée : une
+  commande coupée apparaît dans `toolCallFragments` (`callIndex`, `offset`, `end`,
+  `complete`), **jamais** présentée comme entière dans `toolCalls` ; `textComplete`
+  et `toolCallsComplete` (champs additifs) décrivent chacun SA composante, et
+  `complete` n'est vrai que si LES DEUX le sont. Le contenu complet reste accessible
+  par continuations.
 - **`sdig_status`** : compteurs connus exacts, `null` sinon. `rawFiles` = nombre
   **physique** de fichiers de preuve : **`null`** tant qu'aucun compteur physique
   fiable n'existe (le MCP ne scanne pas `raw/`). `rawReferences` = compteur **exact

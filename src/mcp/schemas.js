@@ -176,14 +176,35 @@ const modelSchema = z.union([
 ])
 
 export const toolCallSchema = z.object({
+  // Index d'appel dans le message (additif) : permet de raccorder un appel entier
+  // (`toolCalls`) à ses fragments (`toolCallFragments`) sans supposer l'ordre.
+  callIndex: safeInt.min(0).optional(),
   tool: z.string().optional(),
   cmd: z.string().optional(),
   exitCode: safeInt.optional(),
   rawRef: z.string().optional()
 }).passthrough()
 
+// Fragment de commande : `cmd` est la PARTIE rendue (jamais présentée comme la
+// commande entière), `offset`/`end` en points de code (`end` exclu), `complete`
+// vrai quand la commande de cet appel est entièrement reconstituée. Champ ADDITIF
+// du contrat read : une commande coupée n'est jamais placée dans `toolCalls`.
+export const toolCallFragmentSchema = z.object({
+  callIndex: safeInt.min(0),
+  cmd: z.string(),
+  offset: safeInt.min(0),
+  end: safeInt.min(0),
+  complete: z.boolean(),
+  tool: z.string().optional(),
+  exitCode: safeInt.optional(),
+  rawRef: z.string().optional()
+}).passthrough()
+
 // Fragment de message : offset/end/complete OBLIGATOIRES (contrat de
-// fragmentation ; l'implémentation de la pagination relève de M3).
+// fragmentation ; l'implémentation de la pagination relève de M3). `textComplete`
+// et `toolCallsComplete` précisent la partie qui reste à parcourir quand le
+// message porte des appels ; `complete` est vrai seulement si LES DEUX le sont.
+// `toolCallFragments` porte les commandes coupées (jamais dans `toolCalls`).
 export const readMessageSchema = z.object({
   index: safeInt.min(0),
   id: z.string(),
@@ -196,7 +217,10 @@ export const readMessageSchema = z.object({
   offset: safeInt.min(0),
   end: safeInt.min(0),
   complete: z.boolean(),
-  toolCalls: z.array(toolCallSchema)
+  textComplete: z.boolean().optional(),
+  toolCallsComplete: z.boolean().optional(),
+  toolCalls: z.array(toolCallSchema),
+  toolCallFragments: z.array(toolCallFragmentSchema).optional()
 }).passthrough()
 
 export const readTruncationSchema = z.object({
@@ -281,7 +305,11 @@ export const TOOL_DESCRIPTIONS = Object.freeze({
     'Chaque message fragmenté porte un identifiant, un offset et une fin en POINTS',
     'DE CODE Unicode (`end` exclu), un encodage UTF-8 déclaré et un indicateur de',
     'fin de message ; le texte complet de la vue reste',
-    'accessible par appels successifs. `cursor` SEUL poursuit une lecture ; il est',
+    'accessible par appels successifs. Les COMMANDES d\'appels sont fragmentées de',
+    'la même façon bornée : une commande coupée apparaît dans `toolCallFragments`',
+    '(jamais présentée comme entière dans `toolCalls`) et `complete` n\'est vrai que',
+    'si le texte ET tous les appels sont complets. `cursor` SEUL poursuit une',
+    'lecture ; il est',
     'interdit de le mêler à une nouvelle requête. `at` masque les messages',
     'postérieurs à l\'ancre (UTC) sans reconstruire la branche pi retenue ni',
     'appliquer `context_edit` : les branches pi sont aplaties par ordre temporel.',

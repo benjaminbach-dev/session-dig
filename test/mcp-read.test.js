@@ -248,7 +248,7 @@ test('budget arrêté AVANT un message (offset 0) : la continuation NE SAUTE PAS
   assert.equal(new Set(seen).size, 30, 'aucun message sauté ni dupliqué')
   assert.deepEqual(seen, [...seen].sort(), 'ordre (ts,id) conservé')
   assert.equal(text.length, 30 * 20000, 'recollement exact')
-  assert.equal(pages, 2, '30 messages de 20 000 / budget ⇒ 2 pages')
+  assert.equal(pages, 30, 'plafond PAR PAGE 20 000 points ⇒ un message de 20 000 par page')
   // Total EXACT connu pour la fenêtre `all` : w.visible.
   const first = call(newHandler(), { session: 'ses_offset0', full: true })
   assert.equal(first.truncated.dimensions.find((d) => d.dimension === 'messages').total, 30)
