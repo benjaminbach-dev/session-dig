@@ -56,6 +56,52 @@ export function viewPath (root = corpusPaths().root) {
   return path.join(root, 'index.db')
 }
 
+// ── Identité de GÉNÉRATION publiée (design D5) ──────────────────────────────
+// Jeton ALÉATOIRE persisté dans `meta`, RENOUVELÉ dans CHAQUE transaction de
+// publication (ingest/rebuild/recover via buildView). Ni `data_version`, ni un
+// mtime, ni l'empreinte de l'index, ni un digest inode+watermarks ne peuvent en
+// tenir lieu : ces mesures peuvent être identiques entre deux générations
+// (deltas à watermarks inchangés, rebuild depuis un corpus identique). L'identité
+// n'est PAS un dérivé de contenu — c'est le seul témoin explicite du PRODUCTEUR.
+// Limite écrite : une mutation manuelle de la vue HORS protocole de publication
+// (édition SQL à la main) n'est pas détectée si elle ne touche ni `generation` ni
+// les watermarks ; aucun mécanisme magique ne la couvre.
+export const GENERATION_KEY = 'generation'
+
+/** Jeton de génération aléatoire (128 bits hex) — jamais dérivé des données. */
+export function newGeneration () {
+  return crypto.randomBytes(16).toString('hex')
+}
+
+/**
+ * Identité de lecture lue DANS le snapshot : génération persistée (`null` si
+ * absente — vue ancienne, compatible) et watermarks par source (projection
+ * canonique triée). Aucune donnée n'est inventée en cas d'illisibilité.
+ */
+export function readViewIdentity (db) {
+  let generation = null
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(GENERATION_KEY)
+    if (row && typeof row.value === 'string' && row.value) generation = row.value
+  } catch { generation = null }
+  const watermark = {}
+  try {
+    for (const row of db.prepare('SELECT source, token, message, session FROM watermark ORDER BY source').all()) {
+      watermark[row.source] = { token: row.token ?? null, message: row.message ?? null, session: row.session ?? null }
+    }
+  } catch { /* watermark illisible : identité partielle, jamais inventée */ }
+  return { generation, watermark }
+}
+
+/**
+ * Hash STABLE d'une identité de lecture (projection canonique) : lie la génération
+ * aux watermarks par source. Utilisable pour un curseur sans exposer l'identité
+ * binaire ; deux lectures du même état produisent le même hash.
+ */
+export function identityHash (identity) {
+  return crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex')
+}
+
 export function viewExists (root = corpusPaths().root) {
   return fs.existsSync(viewPath(root))
 }
@@ -425,6 +471,9 @@ export function buildView (root = corpusPaths().root, { dbFile = viewPath(root),
 
       db.transaction(() => {
         db.prepare('INSERT INTO meta (key, value) VALUES (?,?)').run('layoutVersion', '2')
+        // Identité de génération : renouvelée DANS la transaction de publication
+        // (rollback ⇒ génération précédente conservée).
+        db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run(GENERATION_KEY, newGeneration())
         for (const [name, s] of Object.entries(sourceStatesOf(state))) {
           db.prepare('INSERT INTO watermark (source, token, message, session) VALUES (?,?,?,?)')
             .run(name, s.token, s.message ?? null, s.session ?? null)

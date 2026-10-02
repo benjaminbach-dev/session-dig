@@ -21,7 +21,7 @@ import { adaptPi } from './adapter/pi.js'
 import { atomicWrite, streamLines, ensureDir, md5File } from './util.js'
 import { corpusPaths, sourceDb, sourcePi } from './paths.js'
 import { shardPath, rawShardPath, assertLayout, LAYOUT_VERSION, markerPath, ingestRunning } from './layout.js'
-import { viewPath, openViewWrite, buildView, eventCols, viewUsableForIngest, populateView, SCHEMA, sourceStatesOf, ocTokenOf, piTokenOf } from './view.js'
+import { viewPath, openViewWrite, buildView, eventCols, viewUsableForIngest, populateView, SCHEMA, sourceStatesOf, ocTokenOf, piTokenOf, newGeneration, GENERATION_KEY } from './view.js'
 import { CorpusLock } from './lock.js'
 
 export { markerPath, ingestRunning }
@@ -598,6 +598,9 @@ async function _ingest (root, paths, dbPath, piPath, opts) {
       .run(name, s.token, s.message ?? null, s.session ?? null)
   }
   vdb.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run('layoutVersion', String(LAYOUT_VERSION))
+  // Identité de génération publiée : jeton ALÉATOIRE renouvelé DANS la transaction
+  // (rollback ⇒ génération précédente conservée). Seul témoin explicite du producteur.
+  vdb.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)').run(GENERATION_KEY, newGeneration())
   vdb.exec('COMMIT') // ← point de publication
   vdb.pragma('wal_checkpoint(TRUNCATE)')
   vdb.close()

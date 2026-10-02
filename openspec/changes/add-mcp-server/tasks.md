@@ -95,6 +95,15 @@
 > - [x] `rawFiles` = compteur CONNU DE LA VUE (`rawrefs`), sans scan arbitraire de `raw/` ; compteur indisponible → `null` — contrat ÉLARGI à `entier|null` (pas d'estimation à 0).
 > - [x] 10 tests synthétiques (`test/mcp-status.test.js`) — nominal, non ingéré, archivé absent, archivé non configuré, EACCES, comptes inconnus, `rawFiles` connu/`null`, vue indisponible, noms inconnus, bout-en-bout client MCP réel sur port OS éphémère. Validation parent : `npm test` **384/384** (exit 0), `git diff --check` propre. **MVP et jalon PC non validés.**
 
+> **Sous-lot M3a — identité de GÉNÉRATION publiée (01/10/2026) — M3 reste PARTIEL (read, pagination et CURSEURS non livrés ; jalon PC non coché ; validation parent NON revendiquée).** Aucun handler read, aucun curseur émis.
+>
+> - [x] `meta.generation` = jeton ALÉATOIRE 128 bits persisté dans la vue, RENOUVELÉ dans la transaction de publication des producteurs CLI : `corpus.js` ingest (avant `COMMIT`) et `view.js buildView` (transaction meta/watermark — donc aussi `index`, `recover`, `migrate`). `data_version`/`indexMtime`/inode/watermarks ne tiennent PAS lieu d’identité ; aucun hash d’index entier.
+> - [x] `openReadSnapshot` lit la génération + les watermarks DANS le snapshot (`readViewIdentity`) et rend `generation` (`string|null`, jamais via `indexMtime`) et `readIdentity` (SHA-256 stable de la projection canonique) ; l’identité est recontrôlée APRÈS `COMMIT` → un changement en plein read reste `changed_publication`. `status`/`search` conservent leur contrat (génération non exposée).
+> - [x] Vue ancienne SANS génération : compatible, `generation:null` explicite, identité calculée depuis les watermarks seuls ; le futur `read` refusera d’émettre un curseur sans identité et exigera une reconstruction CLI manuelle (`sdig refresh`) — aucune réparation implicite.
+> - [x] Rollback ⇒ génération précédente conservée (insertion DANS la transaction) ; rebuild change la génération à corpus/watermarks identiques ; archive (hors vue dérivée) inchangée ; divergence pi toujours refusée, vue opencode en avance toujours permise.
+> - [x] Limite ÉCRITE : une mutation SQL de la vue HORS protocole (sans toucher `generation` ni les watermarks) n’est PAS détectée — aucune promesse magique.
+> - [x] 10 tests synthétiques (`test/mcp-generation.test.js`) : initial/persistance/lecture seule, ingest delta & noop, rebuild, rollback (échec `COMMIT` injecté), changement en plein read, multiprocessus WAL, absence de génération (ancienne vue), divergence pi / vue en avance opencode, limite hors protocole. Constat local : `npm test` **422/422** (exit 0), `git diff --check` propre, OpenSpec `--all --strict` 6/6. **Validation parent en attente.**
+
 ### M4 — Exploitation minimale
 
 - [ ] Un seul appel d'outil actif ; `busy` si le créneau est occupé **au moment de l'admission**, sans file applicative supplémentaire. Ne pas promettre une réponse immédiate ou rejeter rétrospectivement tout appel arrivé pendant un calcul bloquant.

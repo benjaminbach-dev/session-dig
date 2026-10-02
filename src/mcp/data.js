@@ -6,10 +6,14 @@
 // est détecté avant le rendu des données.
 //
 // Réutilisation : la décision de fraîcheur vient de `checkFresh` (logique commune
-// `src/view.js`), alimentée par UN état publié capturé de façon stable. On
-// n'expose AUCUNE identité de génération persistante : `PRAGMA data_version` ne
-// sert qu'à détecter un COMMIT concurrent sur CETTE connexion, et les statistiques
-// de fichier qu'à détecter un remplacement ; ce n'est pas un curseur (M3, non livré).
+// `src/view.js`), alimentée par UN état publié capturé de façon stable. L'identité
+// de LECTURE est la génération PUBLIÉE (`meta.generation`, jeton aléatoire renouvelé
+// par les producteurs CLI) liée aux watermarks par source (hash stable), lue dans le
+// snapshot et recontrôlée après COMMIT ; `PRAGMA data_version` détecte en plus un
+// COMMIT concurrent, et les statistiques de fichier un remplacement. `indexMtime`
+// reste un diagnostic, jamais une identité de génération. Une vue ancienne sans
+// génération rend `generation: null` (compatible) : le curseur read (M3b) refusera
+// de s'appuyer dessus et exigera une reconstruction CLI manuelle (`sdig refresh`).
 //
 // Le callback est du code interne de confiance, JAMAIS une entrée d'agent ni un
 // bac à sable : il reçoit une façade LECTURE SEULE (pas d'`exec`/`pragma`/`attach`,
@@ -17,7 +21,7 @@
 import fs from 'node:fs'
 import Database from 'better-sqlite3'
 import { corpusPaths } from '../paths.js'
-import { viewPath, viewHasSchema, watermarkHasSourceColumn, sourceStatesOf, checkFresh } from '../view.js'
+import { viewPath, viewHasSchema, watermarkHasSourceColumn, sourceStatesOf, checkFresh, readViewIdentity, identityHash } from '../view.js'
 import { LAYOUT_VERSION } from '../layout.js'
 import { isMcpAppError, viewUnavailable, internalError } from './errors.js'
 
@@ -272,6 +276,13 @@ export function openReadSnapshot (config, callback) {
       throw viewUnavailable('invalid_schema') // fichier non SQLite, base tronquée, etc.
     }
 
+    // Identité de génération publiée + watermarks par source, lus DANS le même
+    // snapshot que les données. `generation` vaut `null` pour une vue ancienne
+    // (compatible) ; elle n'est PAS présentée via `indexMtime`.
+    const identity0 = readViewIdentity(db)
+    const readIdentity = identityHash(identity0)
+    const generation = identity0.generation
+
     // UN état publié stable, capturé une seule fois et réutilisé partout.
     const published = capturePublishedState(statePath)
     const projection0 = JSON.stringify(projectSources(published.state))
@@ -287,7 +298,7 @@ export function openReadSnapshot (config, callback) {
     const availability = availabilityOf(config.sources)
     const view = readOnlyFacade(db)
 
-    const data = callback({ view, freshness, availability })
+    const data = callback({ view, freshness, availability, generation, readIdentity })
     if (data instanceof Promise) {
       data.catch(() => {}) // évite unhandledRejection ; ne l'attend pas, ne l'annule pas
       throw internalError('async_callback')
@@ -300,12 +311,16 @@ export function openReadSnapshot (config, callback) {
     db.exec('COMMIT')
     // COMMIT concurrent d'une AUTRE connexion pendant notre lecture.
     if (db.pragma('data_version', { simple: true }) !== dataVersion0) throw viewUnavailable('changed_publication')
+    // L'identité de LECTURE (génération publiée + watermarks par source) est
+    // recontrôlée après le COMMIT : un changement de génération ou de watermark
+    // pendant la lecture invalide la page au lieu de mélanger deux états.
+    if (identityHash(readViewIdentity(db)) !== readIdentity) throw viewUnavailable('changed_publication')
     // Recontrôle APRÈS COMMIT/data_version : un remplacement d'index ou une
     // republication survenus pendant la capture finale ou le COMMIT sont détectés
     // (l'ancien descripteur ne voit pas un nouveau fichier).
     checkPublication({ vp, viewIdBefore, statePath, stateId0, projection0 })
 
-    return { data, freshness, availability }
+    return { data, freshness, availability, generation, readIdentity }
   } catch (err) {
     try { db.exec('ROLLBACK') } catch { /* pas de transaction ou déjà terminée */ }
     throw isMcpAppError(err) ? err : internalError('callback_failed')
