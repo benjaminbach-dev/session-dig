@@ -729,6 +729,51 @@ test('source absente vs illisible : messages distincts (pas de silence)', () => 
   assert.throws(() => adaptPi(dfile, {}, {}, () => {}), (e) => /pas un répertoire/.test(e.message))
 })
 
+// ═════════ Découverte : exclusion subagent-artifacts/ ═════════
+
+test('découverte : subagent-artifacts/ exclu (transcript atypique, journal permissions), sessions voisines conservées', () => {
+  const dir = mk('subart')
+  const s1 = fakeUuid()
+  writePiSession(dir, 'proj', 'ses_reelle.jsonl', [
+    sessionLine(s1, T0, '/root/proj'),
+    messageLine(T0 + 1, { role: 'user', content: [text('bonjour')] })
+  ])
+  // Sous-arbre exclu (imbriqué) : en-tête sans type, journal de permissions,
+  // JSON invalide — chacun ferait échouer OU polluerait la passe s'il était lu.
+  writePiSession(dir, 'proj/subagent-artifacts', 'transcript.jsonl', [
+    JSON.stringify({ recordType: 'transcript', sourceEventType: 'message', text: 'artefact' })
+  ])
+  writePiSession(dir, 'proj/subagent-artifacts/run-1', 'permission.jsonl', [
+    JSON.stringify({ type: 'permission.request', id: 'p1' })
+  ])
+  writePiSession(dir, 'proj/subagent-artifacts/run-1', 'corrompu.jsonl', ['pas du JSON'])
+  // Fichier ORDINAIRE homonyme : la règle ne porte que sur un RÉPERTOIRE — il
+  // doit rester découvert et ingéré (session valide, preuve de non-exclusion).
+  const s2 = fakeUuid()
+  writePiSession(dir, 'proj', 'subagent-artifacts.jsonl', [
+    sessionLine(s2, T0 + 10, '/root/proj'),
+    messageLine(T0 + 11, { role: 'user', content: [text('session voisine')] })
+  ])
+  const batches = []
+  let r = null
+  assert.doesNotThrow(() => { r = adaptPi(dir, {}, {}, (b) => batches.push(b)) }, 'le sous-arbre exclu ne fait plus échouer la passe')
+  const f = flat(batches)
+  assert.deepEqual(Object.keys(r.files).sort(),
+    ['proj/ses_reelle.jsonl', 'proj/subagent-artifacts.jsonl'], 'seuls les fichiers hors sous-arbre sont découverts')
+  assert.deepEqual(f.sessions.map(x => x.id).sort(), [`pi:${s1}`, `pi:${s2}`].sort(), 'les deux vraies sessions sont ingérées')
+  assert.equal(f.events.length, 2, 'aucun événement issu du sous-arbre exclu')
+  assert.equal(r.orphans.length, 0, 'aucun orphelin issu du sous-arbre exclu')
+})
+
+test('découverte : JSONL de session invalide HORS subagent-artifacts/ échoue toujours (pas de filtre général)', () => {
+  const dir = mk('subart-hors')
+  writePiSession(dir, 'x', 'casse.jsonl', [
+    JSON.stringify({ type: 'permission.request', id: 'p1' })
+  ])
+  assert.throws(() => adaptPi(dir, {}, {}, () => {}),
+    (e) => /première ligne attendue de type "session"/.test(e.message), 'aucune tolérance ajoutée hors du sous-arbre')
+})
+
 // ═════════ Seconde relecture — fixes 1 à 4 ═════════
 
 test("ids sûrs : '\\' et ':' refusés sur les trois familles d'ids, blancs en bord refusés", () => {

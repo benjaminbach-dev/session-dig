@@ -487,6 +487,11 @@ export function adaptPi (piDir, prevState = {}, opts = {}, onBatch = null) {
     }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue
+      // subagent-artifacts/ : journaux d'artefacts de sous-agents (transcripts
+      // atypiques sans en-tête de session, journal de permissions) — hors
+      // sessions, exclus de la découverte (les fichiers ordinaires homonymes,
+      // eux, restent découverts).
+      if (entry.isDirectory() && entry.name === 'subagent-artifacts') continue
       const abs = path.join(dir, entry.name)
       const r = rel ? `${rel}/${entry.name}` : entry.name
       if (entry.isDirectory()) walk(abs, r)

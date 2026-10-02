@@ -42,6 +42,8 @@ Ce lot est le prochain lot d'implémentation ciblé, pas un nouveau change ni un
 
 ### Lot B — validation CLI PC puis façade MCP
 
+> **02/10/2026 — validation PARTIELLE sur PC :** ingestion initiale Pi et OpenCode réussie sur deux archives dédiées, usages CLI exercés ; delta, passe sans changement, rebuild réel, RSS/plan SQL et client MCP restent NON validés. Défaut MCP de lecture complète reproduit, non corrigé. [Bilan et limites](validation-pc-2026-10-02.md). Les cases composites restent ouvertes.
+
 - [ ] Vérifier ingestion initiale, delta, passe sans changement et reconstruction de la vue depuis le corpus sur le volume PC réellement observé (sauvegarde ou corpus de validation distinct).
 - [ ] Mesurer volume, durées, mémoire et disque avec conditions/limites de mesure ; corriger les blocages sur les chemins utilisés, sans nouveaux quotas préventifs arbitraires.
 - [ ] Valider le MVP et un client réel selon `add-mcp-server/tasks.md` : search/read/status, lecture longue complète, provenance, ancrage, erreurs de fraîcheur et confidentialité. Cas mixtes sur sources présentes, sinon fixtures ; erreurs fabriquées sur copie jetable.
