@@ -1,18 +1,28 @@
 // Fragmentation SANS PERTE des commandes du handler `sdig_read` (correctif
-// budget_exhausted sur `cmd` géante). Tests DURABLES exécutables SANS SDK ni zod :
-// imports DIRECTS de `read.js`/`errors.js`/`constants.js`/`budget.js`/`cursor.js`
-// (jamais `index.js` ni `schemas.js`), fixtures 100 % synthétiques sous tmp.
+// budget_exhausted sur `cmd` géante). Fixtures 100 % synthétiques sous tmp.
+//
+// Validation LOT 1 ajoutée : les sorties fragmentées sont vérifiées contre le
+// schéma Zod RÉEL (`readOutputSchema`) et le transport HTTP est exercé par le
+// CLIENT MCP OFFICIEL sur un port OS éphémère (jamais 18767). Ce fichier requiert
+// désormais le SDK et Zod épinglés ; les recollements directs du handler restent
+// indépendants du transport HTTP.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { buildFixtureDb } from './helpers/fixture.js'
 import { T0, fakeUuid, sessionLine, messageLine, infoLine, writePiSession } from './helpers/pi-fixture.js'
 import { ingest } from '../src/corpus.js'
 import { index } from '../src/retriever/bm25.js'
 import { createReadHandler } from '../src/mcp/read.js'
+import { readOutputSchema } from '../src/mcp/schemas.js'
+import { createMcpTestServer } from '../src/mcp/server.js'
+import { createApp } from '../src/mcp/app.js'
 import { appErrorPayload } from '../src/mcp/errors.js'
 import { measureSerialized } from '../src/mcp/budget.js'
 import { RESPONSE_BUDGET_BYTES, MAX_READ_CHARS, MAX_ID_STRING_CHARS } from '../src/mcp/constants.js'
@@ -182,6 +192,7 @@ function readAll (handler, first, { maxPages = 500 } = {}) {
   let firstMessage = null
   for (;;) {
     const out = cursor ? handler({ cursor }) : handler(first)
+    assert.ok(readOutputSchema.safeParse(out).success, 'sortie read conforme au schéma Zod (page fragmentée)')
     assert.ok(envelopeBytes(out) <= RESPONSE_BUDGET_BYTES, 'enveloppe MCP réelle ≤ budget')
     let pts = 0
     for (const m of out.messages) {
@@ -588,4 +599,128 @@ test('CursorStore : bornes et TTL inchangés', () => {
   assert.throws(() => new CursorStore({ max: 0 }), /max/)
   assert.throws(() => new CursorStore({ ttlMs: 0 }), /ttlMs/)
   assert.equal(typeof CURSOR_TTL_MS, 'number')
+})
+
+// ── LOT 1 : validation SCHÉMA Zod des pages fragmentées ─────────────────────
+
+/** Toutes les pages d'une session sont conformes au schéma Zod, et la conjonction
+ * `complete = textComplete ET toolCallsComplete` est respectée sur chaque message. */
+test('schéma Zod : chaque page fragmentée (texte + commandes, complet progressif) est conforme', () => {
+  const handler = newHandler()
+  for (const first of [
+    { session: 'ses_oc_big', full: true },
+    { session: piSid(), full: true },
+    { session: 'ses_multi', full: true },
+    { session: 'ses_400calls', full: true },
+    { session: 'ses_nulcmd', full: true },
+    { session: 'ses_nultext', full: true },
+    { session: 'ses_mix', full: true }
+  ]) {
+    let cursor = null
+    let pages = 0
+    for (;;) {
+      const out = cursor ? handler({ cursor }) : handler(first)
+      const parsed = readOutputSchema.safeParse(out)
+      assert.ok(parsed.success, `${first.session} page ${pages} : ${parsed.success ? '' : JSON.stringify(parsed.error.issues)}`)
+      for (const m of out.messages) {
+        // `complete` est EXACTEMENT la conjonction des deux composantes (additif :
+        // les champs n'existent que pour un message PORTANT des appels).
+        const conj = (m.textComplete ?? m.complete) && (m.toolCallsComplete ?? true)
+        assert.equal(m.complete, conj, `${first.session} ${m.id} : complete = conjonction`)
+        // Aucune commande rendue dans `toolCalls` ne dépasse le plafond de page.
+        for (const c of m.toolCalls || []) if (c.cmd != null) assert.ok([...c.cmd].length <= MAX_READ_CHARS)
+      }
+      pages++
+      if (!out.truncated || !out.truncated.nextCursor) break
+      cursor = out.truncated.nextCursor
+      if (pages > 500) assert.fail('trop de pages')
+    }
+    assert.ok(pages >= 1)
+  }
+})
+
+// ── LOT 1 : transport HTTP via CLIENT MCP OFFICIEL (loopback éphémère) ───────
+
+/** Empreinte bitwise d'une archive, annexes WAL/SHM de la vue EXCLUES. */
+function archiveSha (dir) {
+  const files = []
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (!/index\.db-(wal|shm)$/.test(e.name)) files.push(p)
+    }
+  }
+  walk(dir)
+  files.sort()
+  const h = crypto.createHash('sha256')
+  for (const f of files) { h.update(path.relative(dir, f)); h.update('\0'); h.update(fs.readFileSync(f)); h.update('\0') }
+  return h.digest('hex')
+}
+
+/** Recolle une session via le client officiel, en validant le schéma par page. */
+async function readAllOverClient (client, first) {
+  let cursor = null
+  let text = ''
+  const calls = new Map()
+  let pages = 0
+  for (;;) {
+    const res = await client.callTool({ name: 'sdig_read', arguments: cursor ? { cursor } : first })
+    assert.notEqual(res.isError, true)
+    const out = res.structuredContent
+    assert.ok(readOutputSchema.safeParse(out).success, 'structuredContent conforme au schéma Zod')
+    for (const m of out.messages) {
+      text += m.text
+      for (const c of m.toolCalls || []) if (c.cmd != null && c.callIndex != null) calls.set(`${m.id}#${c.callIndex}`, c.cmd)
+      for (const f of m.toolCallFragments || []) {
+        const key = `${m.id}#${f.callIndex}`
+        calls.set(key, (calls.get(key) || '') + f.cmd)
+      }
+    }
+    pages++
+    if (!out.truncated || !out.truncated.nextCursor) break
+    cursor = out.truncated.nextCursor
+    if (pages > 200) assert.fail('trop de pages')
+  }
+  return { text, calls, pages }
+}
+
+test('HTTP officiel e2e : search/read/status, fragmentation >600K, pagination, schéma, archive inchangée', async () => {
+  const before = archiveSha(root)
+  const app = createApp({ root, db: dbPath, piDir, serverFactory: createMcpTestServer, logger: () => {} })
+  await app.server.start()
+  try {
+    assert.notEqual(app.server.address().port, 18767, 'jamais le port de production utilisateur')
+    const client = new Client({ name: 'mcp-frag-schema', version: '0.0.0' })
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${app.server.address().port}/mcp`))
+    await client.connect(transport)
+    try {
+      const tools = await client.listTools()
+      assert.deepEqual(tools.tools.map((t) => t.name).sort(), ['sdig_read', 'sdig_search', 'sdig_status'])
+
+      const s = await client.callTool({ name: 'sdig_search', arguments: { query: 'proxy 461' } })
+      assert.notEqual(s.isError, true)
+      assert.ok(s.structuredContent.hits.length >= 1)
+      assert.equal(s.structuredContent.nextCursor, undefined, 'search ne rend jamais de curseur')
+      assert.ok(!JSON.stringify(s.structuredContent).includes(tmp), 'aucun chemin local rendu (confidentialité)')
+
+      // OpenCode : commande de 614 400 caractères recollée par pagination HTTP.
+      const oc = await readAllOverClient(client, { session: 'ses_oc_big', full: true })
+      assert.ok(oc.pages > 2, 'fragmentation effective sur le fil')
+      assert.equal(oc.calls.get(`${'msg_oc_big'}#0`), BIG_CMD, 'commande OpenCode recollée exactement via HTTP')
+
+      // Pi : même commande, source pi.
+      const pi = await readAllOverClient(client, { session: piSid(), full: true })
+      const piKey = [...pi.calls.keys()].find((k) => k.endsWith('#0'))
+      assert.equal(pi.calls.get(piKey), BIG_CMD, 'commande Pi recollée exactement via HTTP')
+
+      const st = await client.callTool({ name: 'sdig_status', arguments: {} })
+      assert.notEqual(st.isError, true)
+      assert.equal(st.structuredContent.rawFiles, null, 'compteur physique inconnu ⇒ null')
+      assert.ok(Number.isInteger(st.structuredContent.rawReferences))
+    } finally { await client.close() }
+  } finally {
+    await app.server.close()
+  }
+  assert.equal(archiveSha(root), before, 'archive bitwise inchangée (annexes WAL/SHM exclues)')
 })
