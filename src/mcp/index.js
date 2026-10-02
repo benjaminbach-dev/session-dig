@@ -1,11 +1,10 @@
-// Façade de contrats MCP (lot M1a).
-//
-// Expose le catalogue fermé, ses schémas, ses validateurs, les garde-fous, la
-// fabrique de serveur et l'ACCÈS DONNÉES. Ne démarre AUCUN serveur et ne se
-// connecte à aucun transport. Le handler `sdig_status` est livré (sous-lot
-// status) ; les handlers `sdig_search`/`sdig_read` ne le sont pas : M1 reste
-// incomplet, M3 n'est pas atteint. Les configurations sont prêtes pour
-// `McpServer.registerTool(name, config, handler)`.
+// Façade MCP : catalogue fermé, schémas, validateurs, garde-fous, accès données
+// lecture seule, handlers RÉELS `sdig_search`/`sdig_read`/`sdig_status`, cache de
+// curseurs et fabrique d'application (`createApp`, `app.js`). `index.js` n'expose
+// aucun serveur démarré : `createApp` monte les trois handlers sur `createMcpServer`
+// (`127.0.0.1:18767`) ; le lancement manuel `sdig mcp` est le seul point d'entrée
+// utilisateur. Validation LOCALE sur fixtures synthétiques ; validation PC et jalon
+// J-MCP NON atteints.
 import { TOOL_DEFINITIONS } from './schemas.js'
 
 export * from './constants.js'
@@ -19,6 +18,7 @@ export * from './status.js'
 export * from './search.js'
 export * from './cursor.js'
 export * from './read.js'
+export * from './app.js'
 export * from './server.js'
 export { parseStrict, clampCeiling, validateSearchInput, validateReadInput, validateStatusInput } from './validate.js'
 

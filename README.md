@@ -63,6 +63,8 @@ Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home`
 - **Orphelines hors scan `--raw`** : preuves non référencées par un événement (exécution directe hors agent), lisibles par `sdig raw pi:<sessionId>:<id>` explicite et signalées à l'ingestion.
 - **Lignes finales non terminées** (session pi vivante) : différées à la passe suivante — jamais acquittées partiellement.
 
+> **Repère** : les sections « MCP — lot M1a », « MCP — lot M1b » et « MCP — accès données » ci-dessous sont **historiques** (états datés). L'état d'implémentation locale **actuel** (handlers `search`/`read`/`status` + commande `sdig mcp`) est décrit dans « MCP — lot M4 livré » plus bas ; leurs mentions « read non livré » ne reflètent plus l'état courant.
+
 ## MCP — lot M1a livré (contrats seuls, 01/10/2026)
 
 **Périmètre strict** : ce lot ne livre ni serveur, ni transport monté, ni handler
@@ -221,6 +223,32 @@ aucun curseur ni fragmentation (M3 non livré) ; **M1 complet non atteint** (han
 - **Tests** : `node --test test/mcp-data.test.js` (35 tests, fixtures synthétiques sous tmp, aucun accès source réelle), dont type/accès `availability`, injections FS déterministes (état republié, index remplacé pendant l'établissement et pendant la capture finale), **concurrence MULTIPROCESSUS WAL entre deux SELECT du callback** (writer enfant `spawnSync` : snapshot isolé, puis refus `changed_publication` par `data_version` ; lecture suivante voit la publication, vue opencode en avance permise), refus async/generator, neutralisation de rejet natif, et mesure exacte des annexes WAL (autorisées par consentement utilisateur du 01/10/2026).
 - **Sources de vérification** : Context7 (better-sqlite3) était **inaccessible** ; recoupement sur les docs officielles — SQLite WAL « Read-Only Databases » (https://www.sqlite.org/wal.html), `PRAGMA data_version` (https://www.sqlite.org/pragma.html#pragma_data_version, comparaison sur la même connexion), API better-sqlite3 (https://github.com/WiseLibs/better-sqlite3/blob/master/docs/api.md, callbacks de transaction async non supportés). Aucune version ni dépendance présumée : les **mesures et tests locaux restent la provenance principale**.
 
+## MCP — lot M4 livré (commande `sdig mcp`, 01/10/2026)
+
+**Périmètre** : `src/mcp/app.js` monte **EXACTEMENT** les trois handlers réels
+(`createSearchHandler`/`createReadHandler`/`createStatusHandler`) sur le serveur
+Streamable HTTP de **production** (`createMcpServer`, `127.0.0.1:18767/mcp`).
+Commande **manuelle** `sdig mcp [--home|--db|--pi-dir]` ; jeton **optionnel** via
+l'environnement `SESSION_DIG_MCP_TOKEN` (jamais affiché) ; journaux techniques
+stderr à **liste blanche fermée** ; arrêt **SIGINT/SIGTERM** propre (`server.close`
+puis purge du cache de curseurs). **Aucun autostart, aucune supervision, aucune
+installation, aucun second transport, aucun travail détaché, aucune réparation
+implicite.** Le parser `mcp` est **dédié et fermé** : options inconnues et
+positionnels refusés **sans écho** (un flag arbitraire peut transporter un secret).
+Guide complet : [docs/mcp.md](docs/mcp.md).
+
+- **Statut (correction)** : `rawFiles` = nombre **physique** de fichiers de preuve
+  — **`null`** tant qu'aucun compteur physique fiable n'existe (le MCP ne scanne
+  pas `raw/`) ; `rawReferences` = compteur **exact de la vue** (`rawrefs`), `null`
+  si la table est indisponible.
+- **Tests** : `test/mcp-app.test.js` (fabrique + journal sûr, E2E client officiel
+  éphémère : search→read paginé→status, reconnexion, filtre source, archive SHA
+  hors annexes WAL, arrêt/redémarrage, `stale_cursor`, SIGTERM enfant, CLI `--help`
+  et arguments invalides sans écho). Les serveurs de test sont **éphémères** : le
+  port **18767 n'est jamais lié** pendant les tests.
+- **Non fait** : validation PC, client MCP réel sur PC, jalon **J-MCP**, archive
+  privée, éval gelée. La validation locale porte sur **fixtures synthétiques**.
+
 ## Roadmap
 
 **Prochain jalon, recentré à la demande explicite de l'utilisateur : usage solo local validé sur PC.**
@@ -240,7 +268,7 @@ Détails : [jalon et validation PC](openspec/changes/scale-corpus/proposal.md), 
 | v0.5 | **ancrage temporel** (20/09) : `sdig read --at <ancre>` masque les messages postérieurs à l'instant demandé — ancre affichée, marqueur explicite, `--json` (ancre + compte) | ✅ fait |
 | v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication transactionnelle de la vue et reprise des shards, migration sans source | implémentée, passe corrective en cours ([progress](openspec/changes/scale-corpus/progress.md)) |
 | v0.7 | **corpus fusionné** : adaptateur pi (JSONL append-only), état multi-source + jetons de fraîcheur par source, `--source`/`--pi-dir`, filtre de provenance (`--source`, `--json`), partIds pi validés, orphelines signalées | ✅ fait |
-| v1 | MCP local lecture seule : `search` top-k, `read` complet par fragments, `status` — périmètre solo ci-dessus | à venir ; usage réel après les prérequis d'intégrité |
+| v1 | MCP local lecture seule : `search` top-k, `read` complet par fragments, `status` — périmètre solo ci-dessus | **implémenté localement (fixtures)** ; validation PC et jalon J-MCP à faire |
 | v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
 | v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |
 

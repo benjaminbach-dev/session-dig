@@ -49,10 +49,10 @@
 > - **WAL — exception étroite autorisée (décision utilisateur du 01/10/2026)** : SQLite peut créer/laisser les annexes natives `index.db-wal`/`index.db-shm` de la vue (mesures synthetic : `-shm` 32 768 o, `-wal` 0 o après `readonly.close`, SHA-256 de `index.db` identique). Conformité **limitée** à ces annexes : aucune donnée du corpus/vue/base source écrite, aucun cleanup manuel sous concurrence, `immutable=1` et l'ignorance d'un WAL vivant exclus, refus borné si le stockage ne permet pas la coordination ; aucune extension à d'autres fichiers ni sources ; spec explicitement adaptée après accord utilisateur ; producteurs CLI non modifiés.
 > - [x] Test **multiprocessus WAL** (`spawnSync`, env sans `NODE_OPTIONS`, timeout borné) entre deux SELECT du callback : snapshot isolé, refus `changed_publication` (`data_version`), lecture suivante voit la publication (vue opencode en avance permise). Validation parent **effective : `npm test` 374/374 (exit 0), OpenSpec `--all --strict` 6/6, `git diff --check` propre** — sans claim de validation PC.
 
-- [ ] Vérifier puis épingler le paquet/version du SDK MCP officiel et son transport Streamable HTTP.
-- [ ] Serveur sur `127.0.0.1:18767`, Host/Origin validés, token optionnel, aucun egress, SQLite en lecture seule, journaux sans contenu sur stderr par défaut. Aucun deuxième transport ni dépendance de lancement à Agora.
-- [ ] Catalogue fermé : `sdig_search`, `sdig_read`, `sdig_status` ; `sdig_raw` absent quelle que soit la configuration MVP.
-- [ ] Fixer les schémas d'entrée/sortie, les unités d'offset et l'encodage de read, les budgets et erreurs applicatives distinctes du protocole MCP. Décrire les outils et les risques de confidentialité dès ce lot ; reprendre le signal structuré de fidélité pi du change add-pi-adapter dans search/read, chaque page read comprise et métadonnées incluses dans le budget (branches aplaties, éditions non appliquées ; pas une détection par session).
+- [x] Vérifier puis épingler le paquet/version du SDK MCP officiel et son transport Streamable HTTP. **Fait au sous-lot M1a** : `@modelcontextprotocol/sdk` `1.31.0` (version publiée npm) + validation directe `zod` `3.25.76`, recoupés sur le paquet local et exercés par `test/mcp-contracts.test.js` et `test/mcp-server.test.js` — provenance existante, aucune nouvelle veille.
+- [x] Serveur sur `127.0.0.1:18767`, Host/Origin validés, token optionnel, aucun egress, SQLite en lecture seule, journaux sans contenu sur stderr par défaut. Aucun deuxième transport ni dépendance de lancement à Agora.
+- [x] Catalogue fermé : `sdig_search`, `sdig_read`, `sdig_status` ; `sdig_raw` absent quelle que soit la configuration MVP.
+- [x] Fixer les schémas d'entrée/sortie, les unités d'offset et l'encodage de read, les budgets et erreurs applicatives distinctes du protocole MCP. Décrire les outils et les risques de confidentialité dès ce lot ; reprendre le signal structuré de fidélité pi du change add-pi-adapter dans search/read, chaque page read comprise et métadonnées incluses dans le budget (branches aplaties, éditions non appliquées ; pas une détection par session).
 
 ### M2 — Search
 
@@ -79,12 +79,12 @@
 
 ### M3 — Read et status
 
-- [ ] `sdig_read` sur la logique partagée : autour/ctx/tail/at, UTC et validation calendaire, masquage avant fenêtre, `anchor`/`maskedCount` et comptes CLI préservés.
-- [ ] Pagination de la vue choisie et fragmentation des messages longs (ID, offset, fin de message) : tout son contenu reste récupérable, même avec `full` et plafonds. Aucun faux contenu intégral tronqué.
-- [ ] Curseur read seul, lié à requête/ancre/fenêtre/génération ; refus des curseurs altérés/étrangers/périmés, du mélange cursor + nouvelle requête ; dernière page sans curseur, progression effective.
-- [ ] Accès SQL par fenêtres et extraction des fragments avant assemblage, sans matérialiser une session entière pour la découper ; un snapshot par page. C'est un travail à valider, pas un acquis du lecteur CLI actuel.
+- [x] `sdig_read` sur la logique partagée : autour/ctx/tail/at, UTC et validation calendaire, masquage avant fenêtre, `anchor`/`maskedCount` et comptes CLI préservés.
+- [x] Pagination de la vue choisie et fragmentation des messages longs (ID, offset, fin de message) : tout son contenu reste récupérable, même avec `full` et plafonds. Aucun faux contenu intégral tronqué.
+- [x] Curseur read seul, lié à requête/ancre/fenêtre/génération ; refus des curseurs altérés/étrangers/périmés, du mélange cursor + nouvelle requête ; dernière page sans curseur, progression effective.
+- [x] Accès SQL par fenêtres et extraction des fragments avant assemblage, sans matérialiser une session entière pour la découper ; un snapshot par page. C'est un travail à valider, pas un acquis du lecteur CLI actuel.
 - [x] `sdig_status` : compteurs connus, disponibilité de chaque source configurée, état ingéré, watermark ; source absente archivée signalée sans effacement, compte par source inconnu = `null`, aucun chemin local rendu.
-- [ ] Fraîcheur par source ; divergence jeton pi vue/état => `view_unavailable` de la vue fusionnée jusqu'à réconciliation CLI. Les lectures réussies sont cohérentes, sans promesse de disponibilité permanente.
+- [x] Fraîcheur par source ; divergence jeton pi vue/état => `view_unavailable` de la vue fusionnée jusqu'à réconciliation CLI. Les lectures réussies sont cohérentes, sans promesse de disponibilité permanente.
 
 > **Sous-lot status livré le 01/10/2026 — M3 reste PARTIEL (read, pagination, curseur non livrés ; jalon PC non coché).** Handler réel `src/mcp/status.js` bâti sur `openReadSnapshot` (`src/mcp/data.js`) : aucune logique de fraîcheur dupliquée.
 >
@@ -125,10 +125,14 @@
 
 ### M4 — Exploitation minimale
 
-- [ ] Un seul appel d'outil actif ; `busy` si le créneau est occupé **au moment de l'admission**, sans file applicative supplémentaire. Ne pas promettre une réponse immédiate ou rejeter rétrospectivement tout appel arrivé pendant un calcul bloquant.
-- [ ] Documenter l'absence de timeout applicatif garanti : tailles bornées ≠ durée SQL bornée ; timeout/déconnexion client ≠ arrêt du calcul ; pas de fausse annulation par `Promise.race`.
-- [ ] Aucune lecture directe des shards pour search/read ; status peut consulter l'état et la disponibilité des sources, sans ingérer leur contenu. Aucune réparation, indexation ou ingestion par le MCP.
-- [ ] Lancement, arrêt et reprise manuels ; fermeture des connexions à l'arrêt normal, aucun travail détaché survivant ; pas de service automatique.
+- [x] Un seul appel d'outil actif ; `busy` si le créneau est occupé **au moment de l'admission**, sans file applicative supplémentaire. Ne pas promettre une réponse immédiate ou rejeter rétrospectivement tout appel arrivé pendant un calcul bloquant.
+- [x] Documenter l'absence de timeout applicatif garanti : tailles bornées ≠ durée SQL bornée ; timeout/déconnexion client ≠ arrêt du calcul ; pas de fausse annulation par `Promise.race`.
+- [x] Aucune lecture directe des shards pour search/read ; status peut consulter l'état et la disponibilité des sources, sans ingérer leur contenu. Aucune réparation, indexation ou ingestion par le MCP.
+- [x] Lancement, arrêt et reprise manuels ; fermeture des connexions à l'arrêt normal, aucun travail détaché survivant ; pas de service automatique.
+
+> **Lot M4 — intégration / exploitation minimale livré (01/10/2026) — validation LOCALE sur fixtures ; jalon PC et J-MCP NON atteints.** `src/mcp/app.js` (`createApp`) monte EXACTEMENT les trois handlers sur `createMcpServer` (`127.0.0.1:18767/mcp`) ; commande MANUELLE `sdig mcp [--home|--db|--pi-dir]` (parser dédié FERMÉ : options inconnues/positionnels refusés **sans écho** — un flag peut transporter un secret), jeton optionnel `SESSION_DIG_MCP_TOKEN` (jamais affiché), journaux stderr à liste blanche, arrêt SIGINT/SIGTERM (`server.close` + purge des curseurs). Aucun autostart, aucune supervision, aucune installation, aucun second transport, aucune réparation implicite.
+>
+> - [x] 10 tests (`test/mcp-app.test.js`) : câblage 3 handlers + journal sûr (champs **ET valeurs** épinglés), **`installAppShutdown` PARTAGÉ** (close→dispose→exit, idempotent ; échec ⇒ exit 1 + diagnostic FIXE) appelé par le CLI **et** le helper (aucune deuxième implémentation), **`launchErrorMessage`** (errno d'écoute PINNÉ, code arbitraire NON recopié), E2E client officiel ÉPHÉMÈRE (search→read paginé long→status, reconnexion, filtre source, archive SHA hors annexes WAL, durée bornée non privée), arrêt/redémarrage (purge du cache), `stale_cursor`, **SIGTERM/SIGINT propres** + **échec de fermeture injecté ⇒ code 1**, CLI `--help`/arguments et **valeurs** invalides (`--home --port`, `--db --pi-dir`, vide) refusés **sans écho** ni binding 18767. Le parser CLI **général** reste inchangé (option inconnue NOMMÉE, spec search) ; seul le parser `mcp` est fermé sans écho. Docs : `docs/mcp.md` + section README. Constat local : `npm test` **474/474** (exit 0), `git diff --check` propre, OpenSpec `--all --strict` 6/6. **Validation PC / client MCP réel / J-MCP NON faits ; éval gelée non rejouée.**
 
 ## Blocage hors MCP — course de première initialisation du verrou (corrigé)
 
@@ -140,16 +144,19 @@
 
 ## Validation MVP (contribue au jalon J-MCP)
 
-- [ ] Fixtures : catalogue fermé, entrées invalides, limites ajustées, budgets, totaux inconnus, erreurs sans contenu privé, search → read.
-- [ ] Search : plus de 50 correspondances et scores égaux multi-sources, résultat top-k stable, filtre source/titres exact, aucune pagination ni faux curseur, réduction sous budget explicite.
-- [ ] Read : plus de 200 messages, message de 60 000 caractères, accents/emoji et coupure par budget ; recollement intégral sans trou/doublon/caractère perdu ; curseur final absent, génération changée refusée. Ces tests ne sont pas reportés.
-- [ ] Fidélité visible : recherche mixte/titre pi seul, search sans pi rendu, read pi initial/continué/vide à l'ancre ; signal pi structuré présent seulement dans les réponses concernées, budget respecté, pas de qualification erronée d'opencode ni de promesse de reconstruction ; descriptions search/read explicites.
-- [ ] Parité temporelle CLI/MCP : ancre pi complète, ancre d'autre session, UTC, dates invalides/vides/inconnues, masquage avant fenêtre et comptes exacts ; la continuation ne réintroduit pas le futur.
-- [ ] Fraîcheur : source absente mais archivée ; vue absente/périmée ; divergence pi refusée jusqu'à réparation ; cas opencode COMMIT avant état lisible si fraîcheur établie ; rejeu réussi => données et ordre identiques.
-- [ ] Admission mono-travail : aucune exécution simultanée ; `busy` quand le gestionnaire observe un créneau occupé ; le test ne suppose pas une réponse immédiate pendant SQLite synchrone. Arrêt/reprise sans travail détaché et archive inchangée.
-- [ ] Confidentialité : descriptions présentes ; Host/Origin et token vérifiés, aucun egress ; corpus/index/base source inchangés, journaux sans query/contenu/token/curseur ; appel raw ou fichier libre impossible.
-- [ ] Client MCP réel sur PC : initialisation, catalogue, recherche, lecture complète par fragments, statut, reconnexion ; consigner client/version, volume testé, temps et limites. Compléter le lot B de scale-corpus ; corpus privé et détails sensibles hors Git.
-- [ ] Tests de régression et validation OpenSpec. Pas de rejeu du jeu naturel gelé sans demande. Ne marquer le MVP livré qu'après validation effective.
+> **Portée** : les cases cochées ci-dessous sont **prouvées par des tests sur fixtures synthétiques** (validation LOCALE). La **validation PC** et le jalon **J-MCP** restent **ouverts** (case dédiée) ; aucun MVP plein ni archivage delta n'est déclaré atteint.
+
+- [x] Fixtures : catalogue fermé, entrées invalides, limites ajustées, budgets, totaux inconnus, erreurs sans contenu privé, search → read. — preuves : `test/mcp-contracts.test.js`, `test/mcp-search.test.js`, `test/mcp-read.test.js`, `test/mcp-app.test.js`.
+- [x] Search : plus de 50 correspondances et scores égaux multi-sources, résultat top-k stable, filtre source/titres exact, aucune pagination ni faux curseur, réduction sous budget explicite. — preuves : `test/mcp-search.test.js`, `test/search-engine.test.js`.
+- [x] Read : plus de 200 messages, message de 60 000 caractères, accents/emoji et coupure par budget ; recollement intégral sans trou/doublon/caractère perdu ; curseur final absent, génération changée refusée. — preuves : `test/mcp-read.test.js` (dont `stale_cursor`), `test/read-window.test.js`.
+- [x] Fidélité visible : recherche mixte/titre pi seul, search sans pi rendu, read pi initial/continué/vide à l'ancre ; signal pi structuré présent seulement dans les réponses concernées, budget respecté, pas de qualification erronée d'opencode ni de promesse de reconstruction ; descriptions search/read explicites. — preuves : `test/mcp-search.test.js`, `test/mcp-read.test.js`, `test/mcp-contracts.test.js`.
+- [x] Parité temporelle CLI/MCP : ancre pi complète, ancre d'autre session, UTC, dates invalides/vides/inconnues, masquage avant fenêtre et comptes exacts ; la continuation ne réintroduit pas le futur. — preuves : `test/mcp-read.test.js`, `test/read-window.test.js`, `test/read-time.test.js`.
+- [x] Fraîcheur : source absente mais archivée ; vue absente/périmée ; divergence pi refusée jusqu'à réparation ; cas opencode COMMIT avant état lisible si fraîcheur établie ; rejeu réussi => données et ordre identiques. — preuves : `test/mcp-data.test.js`, `test/mcp-generation.test.js`.
+- [x] Admission mono-travail : aucune exécution simultanée ; `busy` quand le gestionnaire observe un créneau occupé ; le test ne suppose pas une réponse immédiate pendant SQLite synchrone. Arrêt/reprise sans travail détaché et archive inchangée. — preuve : `test/mcp-server.test.js` (+ `test/mcp-app.test.js` pour l'arrêt SIGTERM/SIGINT partagé).
+- [x] Confidentialité : descriptions présentes ; Host/Origin et token vérifiés, aucun egress ; corpus/index/base source inchangés, journaux sans query/contenu/token/curseur ; appel raw ou fichier libre impossible. — preuves : `test/mcp-server.test.js`, `test/mcp-data.test.js`, `test/mcp-app.test.js` (journal à valeurs épinglées).
+- [ ] **Client MCP réel sur PC** : initialisation, catalogue, recherche, lecture complète par fragments, statut, reconnexion ; consigner client/version, volume testé, temps et limites. Compléter le lot B de scale-corpus ; corpus privé et détails sensibles hors Git. **NON fait — validation PC en attente.**
+- [x] Tests de régression LOCAUX et validation OpenSpec : `npm test` sur fixtures et `openspec validate --all --strict` 6/6 — obtenus (dernier constat local ; le parent rejoue). Pas de rejeu du jeu naturel gelé.
+- [ ] **MVP plein / jalon J-MCP / archivage delta** : **NON déclarés atteints** — dépendent de la validation PC ci-dessus et du lot B de scale-corpus.
 
 ## Extensions possibles, hors jalon (selon usage et nouvel accord)
 

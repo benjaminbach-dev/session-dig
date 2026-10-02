@@ -31,6 +31,10 @@ Usage:
   sdig index                   corpus → vue/index BM25 (rebuild complet)
   sdig refresh                 ingest + index
   sdig status                  état du corpus et de la vue
+  sdig mcp [--home P] [--db P] [--pi-dir P]
+                                serveur MCP local (Streamable HTTP, lecture seule) :
+                                écoute 127.0.0.1:18767/mcp, arrêt par Ctrl-C ;
+                                jeton optionnel via env SESSION_DIG_MCP_TOKEN (jamais affiché)
 
 Filtres de recherche :
   --repo R       repo exact (basename du répertoire de session)
@@ -74,6 +78,23 @@ Global :
   --db P         base opencode UNIQUEMENT (défaut ~/.local/share/opencode/opencode.db,
                  env SESSION_DIG_DB) — jamais appliquée à la source pi`
 
+const MCP_USAGE = `sdig mcp — serveur MCP local (Streamable HTTP, lecture seule)
+
+Usage:
+  sdig mcp [--home P] [--db P] [--pi-dir P]
+
+Écoute EXCLUSIVE 127.0.0.1:18767, route /mcp. Aucun autre transport, aucune
+installation, aucun autostart : lancement et arrêt MANUELS (Ctrl-C / SIGTERM).
+
+  --home P     racine corpus (défaut ~/.local/share/session-dig, env SESSION_DIG_HOME)
+  --db P       base opencode (défaut env SESSION_DIG_DB ou emplacement usuel)
+  --pi-dir P   répertoire des sessions pi (défaut env SESSION_DIG_PI_DIR ou ~/.pi/agent/sessions)
+  --help       cette aide
+
+Jeton optionnel : variable d'environnement SESSION_DIG_MCP_TOKEN (jamais affichée).
+Sans jeton, aucun client local n'est authentifié (loopback n'est PAS une authentification).
+Aucun argument positionnel n'est admis ; toute autre option est refusée.`
+
 function fail (msg, code = 1) {
   console.error(`sdig: ${msg}`)
   process.exit(code)
@@ -99,6 +120,7 @@ function parseArgs (argv) {
     if (a === '--help' || a === '-h') { flags.help = true; continue }
     if (a.startsWith('--')) {
       const k = a.slice(2)
+      // Spec search : l'option inconnue est NOMMÉE dans l'erreur (parcours CLI général).
       if (!known.has(k)) fail(`option inconnue : ${a}\n\n${USAGE}`)
       if (k === 'json' || k === 'plain' || k === 'rebuild' || k === 'raw' || k === 'full' || k === 'recover') { flags[k] = true; continue }
       const v = argv[++i]
@@ -116,6 +138,71 @@ function parseChars (flags) {
   return n
 }
 
+// ── sdig mcp : parser DÉDIÉ FERMÉ + lancement manuel (lot M4) ────────────────
+// Seules --home/--db/--pi-dir/--help sont admises. AUCUN argument (nom d'option,
+// valeur ou positionnel) n'est recopié dans les erreurs : un flag arbitraire peut
+// transporter un secret. Le token n'a PAS de flag : uniquement l'env
+// SESSION_DIG_MCP_TOKEN, jamais affiché. Intercepté AVANT le parser général et le
+// contrôle `--at` (qui ne concernent pas ce dispatch).
+function parseMcpArgs (args) {
+  const flags = {}
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--help' || a === '-h') { flags.help = true; continue }
+    if (a === '--home' || a === '--db' || a === '--pi-dir') {
+      const v = args[i + 1]
+      // Refus d'une valeur ABSENTE, VIDE ou qui est en fait l'option suivante
+      // (`--home --port`) : sinon un flag inconnu serait avalé et le service
+      // pourrait démarrer sur 18767 au lieu d'être refusé. Un chemin commençant
+      // par `-` doit être donné en absolu ou préfixé `./`.
+      if (v == null || v === '' || v.startsWith('-')) fail('mcp : valeur manquante ou invalide pour une option admise')
+      i++
+      flags[a.slice(2)] = v
+      continue
+    }
+    if (a.startsWith('-')) fail('mcp : option non reconnue (admises : --home, --db, --pi-dir, --help)')
+    fail('mcp : aucun argument positionnel admis')
+  }
+  return flags
+}
+
+async function runMcp (args) {
+  const flags = parseMcpArgs(args)
+  if (flags.help) { console.log(MCP_USAGE); return }
+  if (flags.home) process.env.SESSION_DIG_HOME = flags.home
+  if (flags.db) process.env.SESSION_DIG_DB = flags.db
+  if (flags['pi-dir']) process.env.SESSION_DIG_PI_DIR = flags['pi-dir']
+  const paths = corpusPaths(corpusRoot())
+
+  // Import/config/start : TOUTE erreur est convertie en message FIXE (jamais
+  // `e.message`) ; seuls des codes errno d'écoute PINNÉS sont repris.
+  let createApp, launchErrorMessage, installAppShutdown
+  try {
+    ({ createApp, launchErrorMessage, installAppShutdown } = await import('../src/mcp/app.js'))
+  } catch {
+    fail('mcp : module d’application indisponible')
+  }
+  let app
+  try {
+    app = createApp({ root: paths.root, db: flags.db, piDir: flags['pi-dir'] })
+  } catch {
+    fail('mcp : configuration refusée (token ou options invalides)')
+  }
+  try {
+    await app.server.start()
+  } catch (e) {
+    fail(launchErrorMessage(e))
+  }
+
+  // Arrêt partagé (close→dispose→exit) installé AVANT l'annonce d'écoute : aucune
+  // course observable entre le signal et l'enregistrement du handler.
+  installAppShutdown(app)
+  const addr = app.server.address()
+  const tokenSet = !!(process.env.SESSION_DIG_MCP_TOKEN)
+  console.error(`sdig mcp : écoute ${addr.host}:${addr.port}/mcp — ${tokenSet ? 'jeton requis' : 'sans authentification (loopback uniquement)'}`)
+  await new Promise(() => {}) // reste actif jusqu'au signal ; aucun travail détaché
+}
+
 function loadSessions (db, sessionIds = null) {
   // sessions des hits SEULEMENT en chemin de commande (passe corrective 20/09) :
   // charger TOUTES les sessions pour un rendu groupé coûtait O(#sessions) en mémoire.
@@ -129,6 +216,9 @@ function loadSessions (db, sessionIds = null) {
 async function main () {
   const argv = process.argv.slice(2)
   if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { console.log(USAGE); return }
+
+  // `sdig mcp` : parser dédié FERMÉ, intercepté AVANT le parser général et `--at`.
+  if (argv[0] === 'mcp') { await runMcp(argv.slice(1)); return }
 
   const sub = argv[0]
   const isSub = ['ingest', 'index', 'refresh', 'status', 'read', 'raw', 'migrate', 'fingerprint'].includes(sub)
