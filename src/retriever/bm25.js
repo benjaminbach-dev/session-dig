@@ -79,6 +79,31 @@ function likePrefix (value) {
   return value.replace(/[\\%_]/g, '\\$&') + '%'
 }
 
+/**
+ * Prédicats de filtres EXACTS partagés par les trois chemins de recherche
+ * (relevance, chrono avec mots-clés, chrono sans mots-clés) : `repo`, préfixe
+ * littéral `session`, bornes `after`/`before`, `model` sous-chaîne, `role`,
+ * `agent`, `source` exact (COALESCE héritée = opencode). Aucun prédicat `q`.
+ * `source` inconnue ⇒ prédicat exact ⇒ zéro hit, jamais une erreur.
+ */
+function filterSql (query) {
+  const { repo, session, after, before, model, role, agent, source } = query
+  const clauses = []
+  const params = {}
+  if (repo) { clauses.push('e.repo = @repo'); params.repo = repo }
+  if (session) { clauses.push("e.session_id LIKE @session ESCAPE '\\'"); params.session = likePrefix(session) }
+  if (after != null) { clauses.push('e.ts >= @after'); params.after = after }
+  if (before != null) { clauses.push('e.ts <= @before'); params.before = before }
+  if (model) { clauses.push('e.model LIKE @model'); params.model = `%${model}%` }
+  if (role) { clauses.push('e.role = @role'); params.role = role }
+  if (agent) { clauses.push('e.agent = @agent'); params.agent = agent }
+  if (source && source !== 'all') {
+    clauses.push("COALESCE(json_extract(e.json, '$.source'), 'opencode') = @source")
+    params.source = source
+  }
+  return { clauses, params }
+}
+
 // Plafond de CARACTÈRES (points de code) des extraits en mode `boundedText`.
 // La borne `tokens` de `snippet()` ne borne PAS la longueur : un unique token
 // énorme (ex. 60 000 caractères) serait rendu entier, donc `substr` s'applique
@@ -109,7 +134,7 @@ export function search (view, query) {
   const own = typeof view === 'string'
   const db = own ? new Database(view, { readonly: true, fileMustExist: true }) : view
   try {
-    const { q, repo, session, after, before, model, role, agent, source, limit = 20 } = query
+    const { q, limit = 20 } = query
     const match = ftsQuery(q, 'OR')
     // snippet col0 = text, col1 = cmd. Marqueurs ANSI par défaut (TUI), neutres si plain.
     // snipPlain = jumeau SANS décorations (bug 20/09 : la détection de coupure ne doit
@@ -117,24 +142,8 @@ export function search (view, query) {
     const open = query.plain ? '»' : '\x1b[1;33m'
     const close = query.plain ? '«' : '\x1b[0m'
 
-    const where = ['events_fts MATCH @match']
-    const base = { repo, session, after, before, model, role, agent, source }
-    if (repo) { where.push('e.repo = @repo'); }
-    if (session) { where.push("e.session_id LIKE @session ESCAPE '\\'") }
-    if (after != null) { where.push('e.ts >= @after') }
-    if (before != null) { where.push('e.ts <= @before') }
-    if (model) { where.push('e.model LIKE @model') }
-    if (role) { where.push('e.role = @role') }
-    if (agent) { where.push('e.agent = @agent') }
-    // add-pi-adapter (D1/D3) : filtre exact sur le champ `source` des lignes —
-    // une ligne héritée sans champ est lue comme opencode (COALESCE) ; les lignes
-    // de titre portent la source de leur session et sont filtrées comme les
-    // messages. `all`/''/absent = AUCUN prédicat (hits, ordre et scores identiques
-    // au défaut) ; toute autre valeur (source inconnue) = prédicat exact → zéro
-    // hit, pas une erreur.
-    if (source && source !== 'all') {
-      where.push("COALESCE(json_extract(e.json, '$.source'), 'opencode') = @source")
-    }
+    const { clauses, params: filterParams } = filterSql(query)
+    const where = ['events_fts MATCH @match', ...clauses]
 
     // Projection des textes : par défaut les colonnes complètes ; en mode borné
     // (opt-in MCP) seules les LONGUEURS sont transférées, jamais `e.text`/`e.cmd`.
@@ -187,10 +196,82 @@ export function search (view, query) {
       ORDER BY score, id COLLATE BINARY
       LIMIT @limit`
 
-    const params = { match, limit, open, close }
+    const params = { match, limit, open, close, ...filterParams }
     if (boundedText) params.snipChars = MAX_BOUNDED_EXCERPT_CHARS
-    for (const k of Object.keys(base)) if (base[k] != null) params[k] = typeof base[k] === 'string' ? (k === 'session' ? likePrefix(base[k]) : (k === 'model' ? `%${base[k]}%` : base[k])) : base[k]
     return db.prepare(sql).all(params)
+  } finally {
+    if (own) db.close()
+  }
+}
+
+/**
+ * searchChrono(view, { q, sort: 'oldest'|'newest', ...filtres, limit, plain })
+ * → hits AVEC mots-clés ordonnés CHRONOLOGIQUEMENT sur l'ENSEMBLE des matches
+ * filtrés (sélection globale, puis `LIMIT`), jamais sur un top-k BM25 réutilisé.
+ * La clause de matching (`ftsQuery(q, 'OR')` : stopwords fr+en, tokenizer unicode,
+ * phrases pour jetons pointés) et les prédicats de filtres sont IDENTIQUES à
+ * `search()` ; seul l'`ORDER BY` change : `(e.ts, e.id COLLATE BINARY)` dans le
+ * sens demandé. `rank` (BM25) reste projeté en `score` DIAGNOSTIC (numérique),
+ * sans jamais intervenir dans l'ordre. `ts = 0` est une valeur valide.
+ */
+export function searchChrono (view, query) {
+  const own = typeof view === 'string'
+  const db = own ? new Database(view, { readonly: true, fileMustExist: true }) : view
+  try {
+    const { q, limit = 20 } = query
+    const dir = query.sort === 'newest' ? 'DESC' : 'ASC'
+    const match = ftsQuery(q, 'OR')
+    const open = query.plain ? '»' : '\x1b[1;33m'
+    const close = query.plain ? '«' : '\x1b[0m'
+    const { clauses, params: filterParams } = filterSql(query)
+    const where = ['events_fts MATCH @match', ...clauses]
+    const sql = `
+      SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
+             e.cmd, e.text,
+             COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
+             snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
+             snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
+             snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd,
+             rank AS score
+      FROM events e JOIN events_fts ON e.rowid = events_fts.rowid
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.ts ${dir}, e.id COLLATE BINARY ${dir}
+      LIMIT @limit`
+    return db.prepare(sql).all({ match, limit, open, close, ...filterParams })
+  } finally {
+    if (own) db.close()
+  }
+}
+
+/**
+ * browseChrono(view, { sort: 'oldest'|'newest', ...filtres, limit })
+ * → événements SANS mots-clés : aucun `MATCH` FTS, donc aucune requête `'*'`
+ * inventée. Le sous-ensemble CANONIQUE est TOUJOURS l'intersection
+ * `role ∈ {user, assistant}` ∩ filtre `--role` éventuel : `--role title` ou une
+ * valeur inconnue produit ZÉRO hit (jamais l'inclusion d'une ligne de titre).
+ * Les événements à texte vide ou à commandes seules sont INCLUS (ce n'est pas un
+ * mode FTS). `score` vaut `null` (BM25 non calculé) ; la métadonnée de modèle
+ * absente reste `null`, jamais inventée. Filtres et tri `(ts, id BINARY)`
+ * identiques à `searchChrono`.
+ */
+export function browseChrono (view, query) {
+  const own = typeof view === 'string'
+  const db = own ? new Database(view, { readonly: true, fileMustExist: true }) : view
+  try {
+    const { limit = 20 } = query
+    const dir = query.sort === 'newest' ? 'DESC' : 'ASC'
+    const { clauses, params } = filterSql(query)
+    const where = ["e.role IN ('user','assistant')", ...clauses]
+    const sql = `
+      SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
+             e.cmd, e.text,
+             COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
+             NULL AS score
+      FROM events e
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.ts ${dir}, e.id COLLATE BINARY ${dir}
+      LIMIT @limit`
+    return db.prepare(sql).all({ limit, ...params })
   } finally {
     if (own) db.close()
   }

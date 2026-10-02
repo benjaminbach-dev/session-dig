@@ -225,6 +225,97 @@ export function renderTerminal (hits, sessionsById, opts = {}) {
 
 function reset0 (plain) { return plain ? '' : '\x1b[0m' }
 
+/** Modèle d'un hit (chaîne de colonne) ou d'un événement (objet canonique). */
+function flatModel (m) {
+  if (!m) return ''
+  if (typeof m === 'string') return m
+  const p = m.providerID || ''
+  const id = m.modelID || ''
+  return (p || id) ? `${p}${p && id ? '/' : ''}${id}` : ''
+}
+
+/**
+ * Rendu HUMAIN du tri chronologique (change add-cli-chronological-sort, D5/D6) :
+ * rendu PLAT, une entrée par hit, dans l'ORDRE GLOBAL fourni (l'entrelacement de
+ * sessions est préservé à l'écran — jamais de regroupement par session qui le
+ * romprait). L'en-tête affiche le mode et le sens pour qu'un score diagnostique
+ * éventuel ne soit pas confondu avec l'ordre. `--ctx` rend des VOISINS distincts
+ * (jamais marqués `►`, jamais candidats) autour de chaque hit, dédupliqués, sans
+ * modifier l'ordre ni le rang principal.
+ */
+export function renderChrono (hits, sessionsById, opts = {}) {
+  const { sort = 'oldest', plain = false, full = false, chars = null, ctx = 0, ctxBySession = null } = opts
+  const dim = plain ? '' : '\x1b[2m'
+  const reset = plain ? '' : '\x1b[0m'
+  const lines = []
+  const label = sort === 'newest' ? 'newest (du plus récent au plus ancien)' : 'oldest (du plus ancien au plus récent)'
+  lines.push(`\x1b[1m── tri chronologique : ${label} — ${hits.length} hit(s)\x1b[0m`)
+  // Les hits sont rendus séparément : un voisin qui EST un hit n'est jamais
+  // dupliqué comme voisin, et un voisin déjà rendu ne l'est pas deux fois.
+  const printed = new Set(hits.map(h => `${h.session_id}\u0000${h.id}`))
+  let piRendered = false
+
+  const neighborLines = (e) => {
+    const key = `${e.sessionId}\u0000${e.id}`
+    if (printed.has(key)) return []
+    printed.add(key)
+    if (isPiSource(e)) piRendered = true
+    return renderEvent(e, { mark: '  ', plain, full, chars }).split('\n')
+  }
+  const hitLines = (h) => {
+    const model = flatModel(h.model)
+    const diagnostic = typeof h.score === 'number' ? ` · BM25 ${h.score.toExponential(3)} (diagnostic)` : ''
+    const out = [`► ${dim}${fmtTs(h.ts)} ${h.role}${model ? ` ${model}` : ''}${h.agent ? ` (${h.agent})` : ''}${h.repo ? ` · ${h.repo}` : ''} · ${h.session_id}${diagnostic}${reset}`]
+    if (full || chars != null || h.snip == null) {
+      const r = renderText(h.text || '', { full, chars })
+      for (const l of r.lines) out.push(`    ${l}`)
+      if (r.cut && h.id !== h.session_id) out.push(truncMarker({ shownLen: r.shownLen, total: r.total, sessionId: h.session_id, msgId: h.id, plain }))
+    } else {
+      const snip = h.snip && h.snip.trim() ? h.snip : ''
+      for (const l of String(snip).split('\n').slice(0, 3)) out.push(`    ${l}`)
+      if (h.text && h.snip && h.snip.trim() && h.id !== h.session_id) {
+        const shownLen = contentLen(snip.split('\n').slice(0, 3).join('\n'), h.snipPlain != null ? h.snipPlain.split('\n').slice(0, 3).join('\n') : null)
+        if (shownLen < h.text.length) out.push(truncMarker({ shownLen, total: h.text.length, sessionId: h.session_id, msgId: h.id, plain }))
+      }
+    }
+    // Sans requête, aucun snippet FTS n'existe : les commandes seules doivent
+    // rester visibles, avec les mêmes bornes et marqueurs honnêtes que le texte.
+    if (h.snipCmd != null && !full && chars == null) {
+      if (h.snipCmd.trim()) out.push(`    ${dim}$ ${h.snipCmd.split('\n')[0]}${reset}`)
+    } else if (h.cmd) {
+      const r = renderText(h.cmd, { full, chars })
+      for (const l of r.lines) out.push(`    ${dim}$ ${l}${reset}`)
+      // Le JSON de read restitue toolCalls[].cmd intégralement ; le rendu humain
+      // de read --full garde, lui, un aperçu des commandes. Ne pas le promettre
+      // comme chemin vers une commande entière.
+      if (r.cut && h.id !== h.session_id) out.push(`    ${dim}⚠ commande tronquée à l'affichage (${fmtChars(r.shownLen)}/${fmtChars(r.total)} caractères) — intégral : sdig read ${shellQuoteArg(h.session_id)} --around ${shellQuoteArg(h.id)} --json${reset}`)
+    }
+    return out
+  }
+
+  // Les fenêtres sont fusionnées par session et peuvent contenir des trous.
+  // Sélectionner les voisins par clé, pas par indice dans ce tableau dense ;
+  // un titre n'y figure pas et ne doit pas recevoir toutes les autres fenêtres.
+  const compareToHit = (e, h) => (e.ts - h.ts) || Buffer.compare(Buffer.from(e.id, 'utf8'), Buffer.from(h.id, 'utf8'))
+  for (const h of hits) {
+    const ses = sessionsById.get(h.session_id)
+    const source = ses?.source ?? h.source
+    if (source === 'pi') piRendered = true
+    const win = ctx > 0 && ctxBySession ? ctxBySession.get(h.session_id) : null
+    if (win) {
+      for (const e of win.evs.filter(e => compareToHit(e, h) < 0).slice(-ctx)) lines.push(...neighborLines(e))
+    }
+    lines.push(...hitLines(h))
+    if (win) {
+      for (const e of win.evs.filter(e => compareToHit(e, h) > 0).slice(0, ctx)) lines.push(...neighborLines(e))
+    }
+    lines.push('')
+  }
+  lines.push(`${dim}${hits.length} hit(s) — ordre ${sort}${reset}`)
+  if (piRendered) lines.push(piFidelityWarning())
+  return lines.join('\n')
+}
+
 /**
  * Lecture d'une session (sdig read) : fenêtres avec index positionnels.
  * Change add-read-at : deux marqueurs distincts, jamais confondus —

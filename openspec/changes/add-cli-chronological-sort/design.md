@@ -4,6 +4,8 @@
 
 Ce change est **documentaire** : il fige le cadrage minimal retenu pour un tri chronologique CLI, sans implémenter quoi que ce soit. Il ne touche ni au scoring BM25, ni au schéma du corpus, ni à l'API MCP, ni au mode `--raw`. Il ne remplace pas `relevance` et ne prétend pas que la feature est livrée.
 
+> **État au 02/10/2026** : le cadrage documentaire ci-dessus a depuis été **implémenté** (voir `tasks.md`, phase 2) — validation **locale sur fixtures synthétiques** seulement, **sans validation PC ni archivage**. La description ci-dessous conserve le cadrage initial.
+
 Le besoin : prouver une « première trace » globale (premier message, premier assistant d'un modèle) et offrir un ordre chronologique déterministe sur un corpus multi-source. Le tri BM25 répond bien à « le plus pertinent », mal à « le plus ancien ».
 
 ## D1 — Surface d'option et défaut

@@ -39,6 +39,9 @@ sdig read <session> --at <msgId|date>  # état À L'INSTANT de l'ancre (horodata
 sdig raw <partId>                    # la sortie d'outil complète (preuve, lecture par blocs)
 sdig "connection refused" --raw     # chercher aussi dans les sorties brutes (stderr)
 sdig "bug proxy" --source pi         # seuls les hits des sessions pi (titres compris)
+sdig "bug proxy" --sort oldest --limit 20   # tri chronologique GLOBAL (ts, id binaire) : plus ancien d'abord
+sdig --sort newest --role assistant --model deepseek --limit 1 --json  # dernière trace d'un modèle, SANS mots-clés
+sdig --sort oldest --role user --limit 1     # plus ancien MESSAGE user du sous-ensemble canonique courant
 sdig read pi:<sessionId>             # dérouler une session pi — l'id préfixé est l'adresse canonique
 sdig read pi:<sessionId> --around pi:<sessionId>:<msgId> --at pi:<sessionId>:<msgId>  # ancre = id d'événement
 sdig raw pi:<sessionId>:<toolCallId>  # preuve pi rattachée à un appel d'agent
@@ -54,6 +57,12 @@ node scripts/bench.js --n 20000   # banc à corriger avant toute nouvelle conclu
 ```
 
 Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home` ou `SESSION_DIG_HOME`). Sources en lecture seule : base opencode `~/.local/share/opencode/opencode.db` (`--db` / `SESSION_DIG_DB` — **propre à opencode**, jamais appliquée à pi) ; répertoire des sessions pi `~/.pi/agent/sessions` (`--pi-dir` / `SESSION_DIG_PI_DIR`). `sdig status` affiche le watermark par source (opencode : epoch ; pi : fichiers suivis + jeton) et signale les absences. **Changement d'usage v0.6** : `sdig read` dépend de la vue (`index.db`) — refus explicite si absente ou périmée, réparer avec `sdig refresh`.
+
+## Tri chronologique de la recherche (v0.8, 02/10/2026)
+
+`--sort relevance|oldest|newest` sur la **commande de recherche uniquement** ; **option omise = `relevance`, strictement inchangé** (BM25, `score` numérique, regroupement par session). `oldest`/`newest` sélectionnent l'**ensemble** des matches filtrés (mêmes filtres `--repo --session --source --after --before --model --role --agent`) puis les ordonnent par `(ts, id BINARY)` **avant** `--limit` — jamais un top-k BM25 réutilisé. `ts = 0` est valide ; à `ts` égal, l'id canonique qualifié (`pi:<sessionId>:<id>`) départage en ordre binaire. **`--limit` tronque** : ce n'est pas une exhaustivité ni un curseur.
+
+En `oldest`/`newest`, la **requête positionnelle est optionnelle** (mode exploration) : le sous-ensemble canonique est `role ∈ {user, assistant}` ∩ `--role` éventuel — une ligne `title` n'est **jamais** incluse sans mots-clés, et les événements à texte vide ou commandes seules le sont. Une requête **fournie** vide/en espaces/stopwords suit la normalisation existante (`no_terms`), sans bascule silencieuse. La métadonnée de modèle absente n'est jamais inventée (`model: null` en JSON) ; un avertissement **conditionnel** part sur `stderr` (le `stdout` JSON reste un tableau pur). Le rendu humain est **plat** (ordre global, entrelacement des sessions préservé) ; `--ctx` n'ajoute que des voisins, jamais candidats ni clés JSON. `--raw` refuse les modes chronologiques (le mode de pertinence reste compatible) ; les sous-commandes (`ingest`/`read`/`status`/`mcp`…) refusent toute option `--sort`. Validation locale sur **fixtures synthétiques** uniquement ; la validation sur PC n'est pas revendiquée.
 
 ## Pertes documentées (corpus fusionné)
 
@@ -268,6 +277,7 @@ Détails : [jalon et validation PC](openspec/changes/scale-corpus/proposal.md), 
 | v0.5 | **ancrage temporel** (20/09) : `sdig read --at <ancre>` masque les messages postérieurs à l'instant demandé — ancre affichée, marqueur explicite, `--json` (ancre + compte) | ✅ fait |
 | v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication transactionnelle de la vue et reprise des shards, migration sans source | implémentée, passe corrective en cours ([progress](openspec/changes/scale-corpus/progress.md)) |
 | v0.7 | **corpus fusionné** : adaptateur pi (JSONL append-only), état multi-source + jetons de fraîcheur par source, `--source`/`--pi-dir`, filtre de provenance (`--source`, `--json`), partIds pi validés, orphelines signalées | ✅ fait |
+| v0.8 | **tri chronologique CLI** (02/10) : `--sort relevance|oldest|newest` (défaut `relevance` inchangé), sélection globale `(ts, id BINARY)` avant `--limit`, mode sans mots-clés user/assistant, JSON tableau + avertissement modèle sur `stderr` | ✅ implémenté (fixtures) ; PC non revendiqué |
 | v1 | MCP local lecture seule : `search` top-k, `read` complet par fragments, `status` — périmètre solo ci-dessus | **implémenté localement (fixtures)** ; validation PC et jalon J-MCP à faire |
 | v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
 | v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |

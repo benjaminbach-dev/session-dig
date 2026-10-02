@@ -3,11 +3,11 @@
 // change scale-corpus : corpus v2 (shards par session), vue dérivable = chemin de
 // lecture unique, preuves brutes shardées et lues par blocs, empreinte, migration.
 import { ingest, migrate, fingerprint, proofWarning, recover } from '../src/corpus.js'
-import { index, search } from '../src/retriever/bm25.js'
+import { index, search, searchChrono, browseChrono } from '../src/retriever/bm25.js'
 import { corpusPaths, sourceDb, sourcePi, corpusRoot } from '../src/paths.js'
 import { openView, viewPath, viewIsCurrent, inReadTx, checkFresh, sourceStatesOf, piTokenOf } from '../src/view.js'
 import { rawShardPath } from '../src/layout.js'
-import { renderTerminal, renderJson, renderStatus, renderFingerprint } from '../src/format.js'
+import { renderTerminal, renderJson, renderStatus, renderFingerprint, renderChrono } from '../src/format.js'
 import { parseDateBound, streamBytes } from '../src/util.js'
 import { neighborsBySessionDb } from '../src/read.js'
 import { rawScan, openProofFd } from '../src/raw.js'
@@ -18,7 +18,11 @@ import Database from 'better-sqlite3'
 const USAGE = `sdig — archéologie de sessions opencode
 
 Usage:
-  sdig <requête> [filtres]     recherche (commande par défaut)
+  sdig <requête> [--sort relevance|oldest|newest] [filtres]
+                                recherche (commande par défaut) ; --sort oldest|newest
+                                sélectionne TOUS les matches filtrés puis les ordonne
+                                chronologiquement (ts, id) avant --limit ; sans requête
+                                positionnelle, explore les messages user/assistant filtrés
   sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--at <ancre>] [--full | --chars N] [--json]
                                 dérouler une session autour d'un message, éventuellement
                                 bornée dans le temps (--at : id de message, date, ou epoch ms)
@@ -48,6 +52,14 @@ Filtres de recherche :
   --agent A      agent exact (build, plan...)
   --limit N      défaut 20
   --ctx N        affiche N messages voisins autour de chaque hit (lecture du contexte)
+  --sort MODE    tri de la recherche : relevance (défaut, BM25 STRICTEMENT inchangé),
+                 oldest ou newest. En oldest/newest, la sélection porte sur l'ENSEMBLE
+                 des matches filtrés puis l'ordre (ts, id binaire) précède --limit ; la
+                 requête positionnelle est optionnelle (mode exploration user/assistant).
+                 Une requête fournie vide/en espaces/stopwords suit la normalisation
+                 existante ; omission PHYSIQUE seule = exploration. Refusé hors recherche
+                 et avec --raw ; la métadonnée de modèle absente n'est jamais inventée
+                 (model: null, avertissement conditionnel sur stderr en --json).
   --at ANCRE     (read) borne la lecture à un instant : masque les messages postérieurs
                  à l'ancre (id de message de la session, AAAA-MM-JJ[THH:MM] en UTC, ou
                  epoch ms ; une date seule garde la journée entière visible). Un horodatage
@@ -114,7 +126,7 @@ function printPiSummary (pi) {
 function parseArgs (argv) {
   const positional = []
   const flags = {}
-  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'at', 'head', 'full', 'chars', 'recover', 'source', 'pi-dir'])
+  const known = new Set(['repo', 'session', 'after', 'before', 'model', 'role', 'agent', 'limit', 'json', 'plain', 'home', 'db', 'rebuild', 'ctx', 'raw', 'around', 'tail', 'at', 'head', 'full', 'chars', 'recover', 'source', 'pi-dir', 'sort'])
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--help' || a === '-h') { flags.help = true; continue }
@@ -123,6 +135,15 @@ function parseArgs (argv) {
       // Spec search : l'option inconnue est NOMMÉE dans l'erreur (parcours CLI général).
       if (!known.has(k)) fail(`option inconnue : ${a}\n\n${USAGE}`)
       if (k === 'json' || k === 'plain' || k === 'rebuild' || k === 'raw' || k === 'full' || k === 'recover') { flags[k] = true; continue }
+      // `--sort` : valeur MANQUANTE si fin d'arguments OU option suivante — ne JAMAIS
+      // consommer l'option suivante (`--sort --limit 1` ne doit pas avaler --limit).
+      if (k === 'sort') {
+        const v = argv[i + 1]
+        if (v == null || v.startsWith('-')) fail('option --sort : valeur manquante (relevance|oldest|newest)')
+        flags.sort = v
+        i++
+        continue
+      }
       const v = argv[++i]
       if (v == null) fail(`option ${a} : valeur manquante`)
       flags[k] = v
@@ -223,6 +244,15 @@ async function main () {
   const sub = argv[0]
   const isSub = ['ingest', 'index', 'refresh', 'status', 'read', 'raw', 'migrate', 'fingerprint'].includes(sub)
   const { positional, flags } = parseArgs(isSub ? argv.slice(1) : argv)
+
+  // --sort (change add-cli-chronological-sort) : option de la RECHERCHE CLI uniquement.
+  // `mcp` a son parser dédié FERMÉ (refus fixe sans écho) intercepté plus haut. Valeur
+  // inconnue et option sur sous-commande sont refusées EXPLICITEMENT ; l'omission =
+  // relevance. `--sort relevance` sans requête échoue (aucune requête `'*'` inventée).
+  if (flags.sort !== undefined) {
+    if (!['relevance', 'oldest', 'newest'].includes(flags.sort)) fail('--sort : valeur inconnue (relevance|oldest|newest)')
+    if (isSub) fail(`--sort : option de la recherche uniquement (refusée pour « ${sub} »)`)
+  }
 
   // --at (change add-read-at) n'existe que sur la lecture : la recherche borne par date
   // avec --after/--before, elle ne masque pas d'affichage.
@@ -473,15 +503,24 @@ async function main () {
   }
 
   // ── recherche (défaut) ──
+  const sortMode = flags.sort ?? 'relevance'
+  const chrono = sortMode === 'oldest' || sortMode === 'newest'
+  const hasQuery = positional.length > 0
   const q = positional.join(' ')
-  if (!q) fail('requête manquante\n\n' + USAGE)
+  // relevance (défaut) STRICTEMENT inchangé : requête exigée. En chrono, seule
+  // l'OMISSION PHYSIQUE de la requête ouvre l'exploration ; une requête fournie
+  // vide/espaces/stopwords suit la normalisation existante (no_terms).
+  if (!chrono && !q) fail('requête manquante\n\n' + USAGE)
+  if (chrono && flags.raw) fail('--raw : incompatible avec --sort oldest|newest (classement chronologique et scan brut confondus refusés)')
   if (!fs.existsSync(viewPath(paths.root))) fail('index absent — lancer `sdig refresh` d\'abord')
   const after = flags.after ? parseDateBound(flags.after, false) : null
   const before = flags.before ? parseDateBound(flags.before, true) : null
   if (flags.after && after == null) fail(`--after : date invalide (${flags.after})`)
   if (flags.before && before == null) fail(`--before : date invalide (${flags.before})`)
-  const limit = flags.limit ? parseInt(flags.limit, 10) : 20
-  if (!Number.isFinite(limit) || limit < 1) fail('--limit : nombre invalide')
+  // Le nouveau mode exige un entier positif strict ; la conversion historique
+  // de relevance reste inchangée (pas de changement de contrat du défaut).
+  const limit = chrono && flags.limit != null ? Number(flags.limit) : (flags.limit ? parseInt(flags.limit, 10) : 20)
+  if (!Number.isFinite(limit) || limit < 1 || (chrono && !Number.isSafeInteger(limit))) fail('--limit : nombre invalide')
 
   // UNE transaction de lecture pour TOUTE la commande (passe corrective 20/09,
   // revue) : hits, voisins, compteurs et métadonnées partagent UN snapshot —
@@ -498,12 +537,24 @@ async function main () {
         if (flags.json) console.error(warn)
         else console.log(warn)
       }
-      const hits = search(db, {
-        q, repo: flags.repo, session: flags.session, after, before,
-        model: flags.model, role: flags.role, agent: flags.agent,
-        source: sourceFlag,
-        limit, plain: flags.plain || flags.json
-      })
+      const filters = { repo: flags.repo, session: flags.session, after, before, model: flags.model, role: flags.role, agent: flags.agent, source: sourceFlag, limit }
+      let hits
+      if (chrono && hasQuery) {
+        // Sélection GLOBALE des matches filtrés puis ordre (ts, id binaire) avant --limit.
+        hits = searchChrono(db, { ...filters, q, sort: sortMode, plain: flags.plain || flags.json })
+      } else if (chrono) {
+        // Sans mots-clés : sous-ensemble canonique user/assistant, aucun MATCH FTS.
+        hits = browseChrono(db, { ...filters, sort: sortMode })
+      } else {
+        hits = search(db, { ...filters, q, plain: flags.plain || flags.json })
+      }
+      // Mode chrono SANS mots-clés : la métadonnée de modèle absente n'est JAMAIS
+      // inventée ; l'avertissement est CONDITIONNEL aux hits assistants RENDUS et
+      // va sur stderr (stdout reste un unique tableau JSON en --json).
+      if (chrono && !hasQuery) {
+        const missing = hits.filter(h => h.role === 'assistant' && !h.model).length
+        if (missing > 0) console.error(`⚠ modèle absent : ${missing} hit(s) assistant rendu(s) sans métadonnée de modèle (model: null, jamais inventé)`)
+      }
       if (flags.json) { console.log(renderJson(hits)); return { hits, done: true } }
       if (!hits.length && !flags.raw) { console.log('aucun résultat'); return { hits, done: true } }
       const chars = parseChars(flags)
@@ -526,7 +577,12 @@ async function main () {
           }
         }
         const { sessionsById } = loadSessions(db, [...new Set(hits.map(h => h.session_id))])
-        console.log(renderTerminal(prettify, sessionsById, { ctx: ctxBySession ? flags.ctx : 0, ctxBySession, plain: flags.plain, full: !!flags.full, chars }))
+        if (chrono) {
+          // Rendu PLAT : l'ordre global et l'entrelacement des sessions sont préservés.
+          console.log(renderChrono(prettify, sessionsById, { sort: sortMode, ctx: ctxBySession ? parseInt(flags.ctx, 10) : 0, ctxBySession, plain: flags.plain, full: !!flags.full, chars }))
+        } else {
+          console.log(renderTerminal(prettify, sessionsById, { ctx: ctxBySession ? flags.ctx : 0, ctxBySession, plain: flags.plain, full: !!flags.full, chars }))
+        }
       }
       return { hits }
     }

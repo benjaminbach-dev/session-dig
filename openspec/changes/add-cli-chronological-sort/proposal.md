@@ -13,6 +13,8 @@ La recherche `sdig` classe aujourd'hui les résultats par pertinence BM25 : elle
 - **ADDED** — affichage et métadonnées : ordre global préservé à l'écran (rendu plat par hit si nécessaire), JSON en tableau compatible, `score` numérique en `relevance` et en chrono **avec** mots-clés (diagnostic constant), `null` seulement en chrono **sans** mots-clés (nouveau mode, pas un élargissement de type du défaut), voisins `--ctx` jamais candidats et jamais ajoutés au JSON.
 - **Hors périmètre** : listes globales de sessions, identification de la « première session » (distincte du premier message), embeddings/RRF, index de source supplémentaire, modification du scoring BM25 ou de l'API/curseur MCP.
 
+> **État au 02/10/2026** : ces changements sont désormais **implémentés localement** (fixtures synthétiques ; `tasks.md` phase 2). **Aucune validation PC, aucun archivage**, jeu naturel gelé non rejoué.
+
 ## Impact
 
 - **Specs** : delta `search` uniquement — exigence « CLI sdig » modifiée (texte complet, superset du delta actif `add-pi-adapter` pour `--source`/provenance) et quatre exigences chronologiques ajoutées. Aucun delta `corpus` ; les exigences `scale-corpus` (Interface Retriever, Performance, Recherche brute) ne sont pas touchées.
