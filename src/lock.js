@@ -14,7 +14,10 @@
 //     créateur initialise le schéma (`CREATE TABLE`), puis prend le verrou noyau
 //     et écrit la trace propriétaire. Une course de première initialisation se
 //     solde par un refus de l'autre (fichier déjà présent → validation, jamais
-//     d'initialisation par un non-créateur).
+//     d'initialisation par un non-créateur). Un artefact de 0 octet (réservation
+//     non encore commitée) est refusé SANS ouverture : sinon le verrou SHARED
+//     transitoire d'un lecteur ferait échouer le `BEGIN EXCLUSIVE` du créateur
+//     (`busy_timeout=0`), et les DEUX processus refuseraient.
 //   - chemin DÉJÀ PRÉSENT : aucune écriture de structure. Rejet d'emblée si
 //     symlink ou non-fichier (cible intacte) ; sinon validation LECTURE SEULE du
 //     schéma attendu, puis seulement le verrou noyau et la trace. Un artefact
@@ -94,6 +97,16 @@ export class CorpusLock {
 
     // 2. Artefact existant : validation LECTURE SEULE, aucune mutation de structure.
     if (!fresh) {
+      // Fenêtre de PREMIÈRE INITIALISATION : un schéma commité pèse ≥ 8192 o (le
+      // COMMIT écrit la 1re page) ; un fichier de 0 octet est donc encore vierge
+      // (réservé par le créateur, non commité). L'ouvrir en lecture prendrait un
+      // verrou SHARED transitoire qui ferait échouer le `BEGIN EXCLUSIVE` du
+      // créateur (`busy_timeout=0`) — course observée : les DEUX refusaient. On
+      // refuse ici SANS ouvrir : aucun verrou pris, rien écrit, aucune autre
+      // connexion possible vers un 0 octet (schéma impossible).
+      let size = null
+      try { size = fs.statSync(this.path).size } catch { return false }
+      if (size === 0) return false
       let ro = null
       try {
         ro = new Database(this.path, { readonly: true, fileMustExist: true })

@@ -223,6 +223,60 @@ test('initialisation suspendue après réservation : le concurrent refuse sans r
   await Promise.all([creator.exit, other.exit])
 })
 
+test('cause démontrée : un lecteur SHARED sur fichier 0 o bloque le BEGIN EXCLUSIVE du créateur', (t) => {
+  // Reproduit DÉTERMINISTEMENT la fenêtre de première initialisation : un lecteur
+  // ouvre le fichier réservé (0 octet) et tient une transaction de lecture pendant
+  // que le créateur tente le verrou noyau. `busy_timeout=0` → SQLITE_BUSY : c'est
+  // exactement la collision qui faisait refuser les DEUX processus.
+  const { lockPath } = ctx(t)
+  const fd = fs.openSync(lockPath, 'wx')
+  fs.closeSync(fd)
+  assert.equal(fs.statSync(lockPath).size, 0, 'réservation vierge (schéma non commité)')
+  const reader = new Database(lockPath, { readonly: true, fileMustExist: true })
+  try {
+    reader.pragma('busy_timeout = 0')
+    reader.exec('BEGIN')
+    reader.prepare('SELECT count(*) AS n FROM sqlite_master').get() // matérialise le verrou SHARED
+    const writer = new Database(lockPath)
+    try {
+      writer.pragma('busy_timeout = 0')
+      writer.pragma('journal_mode = MEMORY')
+      writer.pragma('locking_mode = EXCLUSIVE')
+      assert.throws(() => writer.exec('BEGIN EXCLUSIVE'), (e) => e.code === 'SQLITE_BUSY', 'le lecteur SHARED bloque le créateur')
+    } finally { writer.close() }
+  } finally { reader.close() }
+})
+
+test('course de première initialisation : boucle concurrente (chemins neufs), un seul acquéreur', { timeout: 60000 }, async (t) => {
+  // Régression de la collision 0 octet : chaque essai part d'un chemin ABSENT
+  // (jamais un état déjà initialisé) et doit produire EXACTEMENT un acquéreur.
+  const kids = []
+  const dirs = []
+  t.after(async () => { await killAndWait(kids) })
+  t.after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }) })
+  const ROUNDS = 40
+  for (let i = 0; i < ROUNDS; i++) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-lock-loop-'))
+    dirs.push(dir)
+    const lockPath = path.join(dir, '.ingest-lock')
+    const a = new Child({ LOCK_PATH: lockPath })
+    const b = new Child({ LOCK_PATH: lockPath })
+    kids.push(a, b)
+    await Promise.all([a.waitAny(['ready']), b.waitAny(['ready'])])
+    a.send('acquire')
+    b.send('acquire')
+    const [ra, rb] = await Promise.all([
+      a.waitAny(['acquired', 'refused', 'error']),
+      b.waitAny(['acquired', 'refused', 'error'])
+    ])
+    const acquired = [ra, rb].filter((r) => r.type === 'acquired')
+    assert.equal(acquired.length, 1, `essai ${i} : exactement un acquéreur (a=${ra.type}, b=${rb.type})`)
+    a.kill(); b.kill()
+    await Promise.all([a.exit, b.exit])
+  }
+  assert.equal(dirs.length, ROUNDS, 'chemin neuf à chaque essai')
+})
+
 test('propriétaire vivant (enfant réel) : refus, fichier jamais supprimé, reprise après release', { timeout: 20000 }, async (t) => {
   const { lockPath, logPath, spawnChild } = ctx(t)
   const owner = spawnChild()
