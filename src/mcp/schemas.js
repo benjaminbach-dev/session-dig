@@ -222,8 +222,11 @@ export const readOutputSchema = z.object({
 
 // Status par source : disponibilité, ingestion, watermark, et compteurs par source
 // SEULEMENT s'ils sont connus (chaque compteur `null` sinon, jamais inventé).
+// `available` est ÉLARGI à `null` (sous-lot status) : un accès non déterminable
+// (ex. permission refusée) reste inconnu, jamais converti en `false` inventé.
+// Évolution additive documentée du contrat M1a (aucune borne réduite).
 export const sourceStatusSchema = z.object({
-  available: z.boolean(),
+  available: z.boolean().nullable(),
   ingested: z.boolean(),
   watermark: z.record(z.any()).nullable(),
   counts: z.object({
@@ -237,7 +240,9 @@ export const statusOutputSchema = z.object({
     sessions: safeInt.min(0),
     events: safeInt.min(0)
   }).passthrough(),
-  rawFiles: safeInt.min(0),
+  // Compteur de preuves brutes connu de la VUE ; `null` si indisponible (jamais
+  // estimé). Élargi depuis `safeInt.min(0)` au sous-lot status (null honnête).
+  rawFiles: safeInt.min(0).nullable(),
   view: z.object({ events: safeInt.min(0), mtime: z.number() }).passthrough().nullable(),
   viewNote: z.string().nullable(),
   sources: z.record(sourceStatusSchema),

@@ -44,7 +44,7 @@
 > - [x] Callback purement synchrone : `AsyncFunction`/`AsyncGeneratorFunction`/`GeneratorFunction` refusés **avant invocation** ; `Promise` renvoyé refusé sans être attendu, rejet de Promise native neutralisé (aucune prétention d'annulation, aucun `.then` arbitraire) ; exception → `internal` bornée sans écho.
 > - [x] `availability` : `stat` seul, type attendu (`opencode` fichier, `pi` répertoire), absence → `false`, accès refusé → `null`, config propriétaire explicite, noms inconnus jamais renvoyés.
 > - [x] Façade lecture seule (pas d'`exec`/`pragma`/`attach`, statements `reader` seulement) ; callback documenté comme code interne de confiance, **pas un bac à sable** ni une entrée d'agent.
-> - [ ] Handler `sdig_status` (disponibilité/scans) et handlers search/read : **non livrés** ; aucun lancement utilisateur.
+> - [x] Handler `sdig_status` livré via le sous-lot status (voir M3) ; handlers search/read : **non livrés** ; aucun lancement utilisateur.
 > - [ ] Génération publiée persistante / curseur read : **M3, non livrés**.
 > - **WAL — exception étroite autorisée (décision utilisateur du 01/10/2026)** : SQLite peut créer/laisser les annexes natives `index.db-wal`/`index.db-shm` de la vue (mesures synthetic : `-shm` 32 768 o, `-wal` 0 o après `readonly.close`, SHA-256 de `index.db` identique). Conformité **limitée** à ces annexes : aucune donnée du corpus/vue/base source écrite, aucun cleanup manuel sous concurrence, `immutable=1` et l'ignorance d'un WAL vivant exclus, refus borné si le stockage ne permet pas la coordination ; aucune extension à d'autres fichiers ni sources ; spec explicitement adaptée après accord utilisateur ; producteurs CLI non modifiés.
 > - [x] Test **multiprocessus WAL** (`spawnSync`, env sans `NODE_OPTIONS`, timeout borné) entre deux SELECT du callback : snapshot isolé, refus `changed_publication` (`data_version`), lecture suivante voit la publication (vue opencode en avance permise). Validation parent **effective : `npm test` 374/374 (exit 0), OpenSpec `--all --strict` 6/6, `git diff --check` propre** — sans claim de validation PC.
@@ -66,8 +66,17 @@
 - [ ] Pagination de la vue choisie et fragmentation des messages longs (ID, offset, fin de message) : tout son contenu reste récupérable, même avec `full` et plafonds. Aucun faux contenu intégral tronqué.
 - [ ] Curseur read seul, lié à requête/ancre/fenêtre/génération ; refus des curseurs altérés/étrangers/périmés, du mélange cursor + nouvelle requête ; dernière page sans curseur, progression effective.
 - [ ] Accès SQL par fenêtres et extraction des fragments avant assemblage, sans matérialiser une session entière pour la découper ; un snapshot par page. C'est un travail à valider, pas un acquis du lecteur CLI actuel.
-- [ ] `sdig_status` : compteurs connus, disponibilité de chaque source configurée, état ingéré, watermark ; source absente archivée signalée sans effacement, compte par source inconnu = `null`, aucun chemin local rendu.
+- [x] `sdig_status` : compteurs connus, disponibilité de chaque source configurée, état ingéré, watermark ; source absente archivée signalée sans effacement, compte par source inconnu = `null`, aucun chemin local rendu.
 - [ ] Fraîcheur par source ; divergence jeton pi vue/état => `view_unavailable` de la vue fusionnée jusqu'à réconciliation CLI. Les lectures réussies sont cohérentes, sans promesse de disponibilité permanente.
+
+> **Sous-lot status livré le 01/10/2026 — M3 reste PARTIEL (read, pagination, curseur non livrés ; jalon PC non coché).** Handler réel `src/mcp/status.js` bâti sur `openReadSnapshot` (`src/mcp/data.js`) : aucune logique de fraîcheur dupliquée.
+>
+> - [x] Compteurs globaux exacts (sessions ; événements hors titres) et compteurs par source CONNUS depuis la vue (fixture : opencode 3 sessions/5 événements, pi 1/2) ; source configurée non ingérée → `ingested:false`, `watermark:null`, comptes `null` ; agrégat par source indisponible (JSON illisible) → `null`, jamais estimé.
+> - [x] Disponibilité par source configurée via `data.availability` (`stat` seul) sans chemin rendu ; accès non déterminable (EACCES) → `available:null` — contrat ÉLARGI à `boolean|null` (décision encadrée) pour ne pas inventer `false` ; noms de source inconnus ignorés.
+> - [x] Source absente mais archivée signalée (`available:false`, `ingested:true`, watermark et comptes conservés) sans effacement d'état ni erreur.
+> - [x] Fraîcheur `data.js` reprise telle quelle dans chaque réponse ; vue absente/périmée/divergence jeton pi → `view_unavailable` à raison FERMÉE, sans chemin ni contenu.
+> - [x] `rawFiles` = compteur CONNU DE LA VUE (`rawrefs`), sans scan arbitraire de `raw/` ; compteur indisponible → `null` — contrat ÉLARGI à `entier|null` (pas d'estimation à 0).
+> - [x] 10 tests synthétiques (`test/mcp-status.test.js`) — nominal, non ingéré, archivé absent, archivé non configuré, EACCES, comptes inconnus, `rawFiles` connu/`null`, vue indisponible, noms inconnus, bout-en-bout client MCP réel sur port OS éphémère. Validation parent : `npm test` **384/384** (exit 0), `git diff --check` propre. **MVP et jalon PC non validés.**
 
 ### M4 — Exploitation minimale
 
