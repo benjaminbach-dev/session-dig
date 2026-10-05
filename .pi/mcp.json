@@ -2,6 +2,7 @@
   "mcpServers": {
     "sdig": {
       "url": "http://127.0.0.1:18767/mcp",
+      "exposure": "direct",
       "enabled": true
     }
   }
