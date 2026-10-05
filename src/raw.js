@@ -58,6 +58,13 @@ export function openProofFd (rawRoot, partId) {
  * scan par conception, lisibles par `sdig raw <partId>` explicite) ; `opencode`
  * n'en lit aucune. Retourne [{ rawRef, sessionId, ts, role, tool, cmd, line, lineNo }]
  * borné par limit. Durée affichée par le CLI : coût O(volume de raw/ parcouru).
+ *
+ * Références parcourues EN FLUX (scale-corpus, mémoire bornée) : l'itérateur
+ * better-sqlite3 consomme `rawrefs` ligne à ligne — plus de `.all()` ni de
+ * plafond arbitraire, une seule référence transférée à la fois. La connexion, son
+ * itérateur et le fd de chaque preuve sont refermés sur TOUS les chemins
+ * (épuisement, `break` sur limit, erreur DB, erreur de lecture d'une preuve) ;
+ * l'erreur de lecture d'une preuve n'est jamais avalée par un catch global.
  */
 export function rawScan (root, needle, { limit = 10, source = null } = {}) {
   if (!needle || !needle.trim()) return []
@@ -69,47 +76,62 @@ export function rawScan (root, needle, { limit = 10, source = null } = {}) {
   const paths = corpusPaths(root)
   const out = []
 
-  // références depuis la vue (borné : requête indexée par rawRef) — le préfixe
-  // du partId détermine la source, sans lecture des preuves des autres sources
-  let refs
+  // vue absente/refusée : aucune preuve resituable — scan rendu vide sans crash
+  // (refus historique conservé) ; `openView` referme déjà la connexion sur ses
+  // propres motifs de refus, il n'y a donc rien à nettoyer ici.
+  let db
   try {
-    const db = openView(root)
-    const sql = 'SELECT rawRef, eventId, sessionId, ts, role, tool, cmd FROM rawrefs' +
-      (source === 'pi' ? " WHERE rawRef LIKE 'pi:%'" : source === 'opencode' ? " WHERE rawRef NOT LIKE 'pi:%'" : '') +
-      ' LIMIT 1000000'
-    refs = db.prepare(sql).all()
-    db.close()
+    db = openView(root)
   } catch {
-    refs = [] // vue absente : aucune preuve resituable — scan rendra vide sans crash
+    return []
   }
-  if (!refs.length) return []
 
-  // sessions touchées seulement : shard de l'événement porteur (1 fichier par ref)
-  // ouverture CONFINÉE par ref (revue finale) : parents vérifiés, fstat du fd —
-  // une preuve refusée (lien, hors raw/, spéciale) est ignorée, jamais lue
-  for (const ref of refs) {
-    if (out.length >= limit) break
-    const opened = openProofFd(paths.raw, ref.rawRef)
-    if (opened.error) continue // sortie refusée ou absente : ignorée
-    let found = null
-    try {
-      scanTextFd(opened.fd, needle, { onMatch: (line, lineNo) => {
-        found = { line, lineNo }
-        return false // première correspondance par preuve ; algorithme traité au lot 2
-      } })
-    } finally { fs.closeSync(opened.fd) }
-    if (found) {
-      out.push({
-        rawRef: ref.rawRef,
-        sessionId: ref.sessionId,
-        ts: ref.ts,
-        role: ref.role,
-        tool: ref.tool,
-        cmd: ref.cmd,
-        line: found.line,
-        lineNo: found.lineNo
-      })
+  // références depuis la vue : le préfixe du partId détermine la source, sans
+  // lecture des preuves des autres sources. `.iterate()` reste PARESSEUX et
+  // rend les lignes dans l'ordre QUE `.all()` rendait (même requête, sans tri
+  // ajouté) ; l'itérateur retient la connexion tant qu'il est vivant, donc son
+  // nettoyage précède TOUJOURS `db.close()` dans le finally.
+  let refs = null
+  try {
+    const sql = 'SELECT rawRef, eventId, sessionId, ts, role, tool, cmd FROM rawrefs' +
+      (source === 'pi' ? " WHERE rawRef LIKE 'pi:%'" : source === 'opencode' ? " WHERE rawRef NOT LIKE 'pi:%'" : '')
+    refs = db.prepare(sql).iterate()
+    for (const ref of refs) {
+      if (out.length >= limit) break
+      // sessions touchées seulement : shard de l'événement porteur (1 fichier
+      // par ref), ouverture CONFINÉE (revue finale) — une preuve refusée (lien,
+      // hors raw/, spéciale) est ignorée, jamais lue
+      const opened = openProofFd(paths.raw, ref.rawRef)
+      if (opened.error) continue // sortie refusée ou absente : ignorée
+      let found = null
+      try {
+        scanTextFd(opened.fd, needle, { onMatch: (line, lineNo) => {
+          found = { line, lineNo }
+          return false // première correspondance par preuve
+        } })
+      } finally { fs.closeSync(opened.fd) }
+      if (found) {
+        out.push({
+          rawRef: ref.rawRef,
+          sessionId: ref.sessionId,
+          ts: ref.ts,
+          role: ref.role,
+          tool: ref.tool,
+          cmd: ref.cmd,
+          line: found.line,
+          lineNo: found.lineNo
+        })
+        // Arrêt AVANT de solliciter la référence suivante, même si celle-ci
+        // déclencherait une erreur d'itération : le résultat demandé est atteint.
+        if (out.length >= limit) break
+      }
     }
+  } finally {
+    // libère l'itérateur : `break`, épuisement ou erreur en cours de parcours —
+    // `db.close()` refuse une connexion à itérateur actif ; l'appel est
+    // idempotent quand il est déjà épuisé. Une erreur de lecture de preuve
+    // remonte APRÈS ce nettoyage (aucun catch ici ne l'avale).
+    try { refs?.return?.() } finally { db.close() }
   }
   return out
 }
