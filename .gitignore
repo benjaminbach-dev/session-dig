@@ -26,3 +26,6 @@ dist/
 # Divers
 *.log
 .DS_Store
+
+# Banc d'usage hermétique sdig (oracle privé, jamais publié)
+/eval/hermetic/
