@@ -84,6 +84,38 @@ client officiel SDK `StreamableHTTPClientTransport` 1.31.0.
    Host/Origin forgés, cache froid disque.
 4. Passe `--rebuild` du corpus réel non exécutée (lot B restant).
 
+## Lot B — rebuild, empreinte et mesures (05/10, même journée)
+
+| Mesure | Valeur |
+|---|---|
+| Empreinte corpus (md5 agrégé) | `47b977e3246ec6cde364fbd9e066c3fa`, 100 720 fichiers / 360,5 Mo — **identique sur 3 runs (avant ×2, après rebuild)**, sortie octet à octet |
+| Rebuild vue (`sdig index`) | **8,98 s**, RSS ~207 Mio, comptes identiques (2 368 / 89 449), `index.db` même taille (SHA changé, normal) |
+| Recherche CLI `--json` (69 req., chaud) | p50 **114,8 ms**, p95 **136,3 ms** — plancher process+ouverture DB ~86–96 ms ⇒ travail BM25 ~20–40 ms |
+| Lecture `read --at` (8 sessions, chaud) | p50 122,8 ms, p95 145,2 ms |
+| MCP `sdig_search` (20 appels, chaud) | p50 **44,1 ms**, p95 **65,6 ms** — ~2,5–3× plus rapide que la CLI (pas de redémarrage de process) |
+
+Limites : **cache froid non mesurable** (pas de sudo/drop_caches) ; RSS par échantillonnage
+0,2 s ; avertissement de fraîcheur source pi vivante (normal, source active).
+
+## Banc synthétique sur machine cible (05/10)
+
+`node scripts/bench.js` (graine 20260920, tmpfs, cache froid du banc) :
+
+| | 100k (200 sess.) | 500k (1 000 sess.) | cibles |
+|---|---|---|---|
+| Ingestion initiale | 9,6 s | **27,6 s** | — |
+| Delta (1 msg session monstre) | 68 ms | 311 ms (3 shards) | — |
+| Indexation complète | 2,3 s | 9,4 s | — |
+| Recherche rendue p95 | 114 ms | **499 ms** | < 100 ms @ 500k — **ÉCART documenté (5×)** |
+| `read --at` | 20 ms | 71 ms (30 898 msgs) | < 100 ms @ 10k ✓ |
+| Preuve par blocs | 0,4 ms | 0,3 ms | ✓ |
+| RSS max banc | 355 Mo | **375 Mo** | < 512 Mo ✓ |
+
+La cible p95 recherche n'est **pas atteinte à 500k** (499 ms) ; la note de cadrage
+du change (tâches scale-corpus) s'applique : objectifs justifiés, pas prérequis du
+premier jalon solo local ; arbitrage à prévoir au lot C (le plancher CLI
+process+ouverture ~86–96 ms borne déjà seule la cible à ~100 ms par requête).
+
 ## Ce qui reste avant J-MCP / clôture
 
 - Lot B de scale-corpus : rebuild depuis le corpus réel, mesures restantes
