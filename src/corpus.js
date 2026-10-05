@@ -76,6 +76,13 @@ export function recover (root = corpusPaths().root) {
       return { done: false, note: "aucun marqueur d'ingestion en cours — rien à réconcilier" }
     }
     const st = readState(paths.state)
+    // Ramassage des temporaires orphelins AVANT tout et AVANT le retrait du marqueur
+    // (même primitive qu'en réconciliation) : sans lui, un opérateur qui passe par
+    // `recover` seul laissait les `.new-<pid>` d'un crash derrière lui — la passe
+    // suivante ne les voyait plus (reconciling=false). Ne touche QUE les noms
+    // temporaires du protocole : jamais un shard publié ni un id qui contiendrait
+    // `.tmp-`/`.new-`.
+    const swept = sweepTemporaries(root)
     // Verrou DÉJÀ DÉTENU transmis à buildView (instance validée, jamais un booléen) :
     // aucune double acquisition, aucun déverrouillage anticipé — le verrou reste
     // détenu jusqu'à la fin de recover (comptes, état, retrait du marqueur).
@@ -86,6 +93,7 @@ export function recover (root = corpusPaths().root) {
     const oc = sourceStatesOf(st).opencode
     return {
       done: true,
+      swept,
       note: `reprise explicite : vue reconstruite depuis le corpus tel qu'il est (${events} événements), watermark conservé (message=${oc?.message ?? '?'}, session=${oc?.session ?? '?'}) — la prochaine ingestion depuis la source convergera`
     }
   } finally {

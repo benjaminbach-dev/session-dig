@@ -15,7 +15,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { buildFixtureDb } from './helpers/fixture.js'
 import { ingest, fingerprint, ingestRunning, recover, proofWarning, loadCorpus } from '../src/corpus.js'
-import { listShards, shardPath } from '../src/layout.js'
+import { listShards, shardPath, rawShardPath } from '../src/layout.js'
 import { viewIsCurrent, openView, viewPath, ocTokenOf } from '../src/view.js'
 import { readJsonl } from '../src/util.js'
 
@@ -172,4 +172,39 @@ test('temporaires orphelins : ramassés à la passe suivante, aucun travail orph
   assert.ok(r.swept >= 1, 'temporaires ramassés')
   assert.equal(fs.existsSync(junk), false)
   assert.equal(ingestRunning(root), false)
+})
+
+// ── recover seul : il ramasse lui-même les temporaires orphelins (correctif lot A) ──
+// Avant correctif, `recover` retirait le marqueur sans balayer : l'ingestion suivante
+// voyait `reconciling=false` et ne ramassait plus jamais les `.new-<pid>` d'un crash.
+test('recover seul : temporaires orphelins ramassés sous marqueur, watermark conservé, shards publiés intacts', () => {
+  // référence AVANT : corpus publié laissé par les tests précédents.
+  const sources = JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8')).sources
+  const shardBytes = new Map(listShards(root).map(rel => [rel, fs.readFileSync(path.join(root, rel))]))
+  // preuve PUBLIÉE dont l'id contient `.new-` : ne doit jamais être prise pour un temporaire.
+  const keep = rawShardPath(path.join(root, 'raw'), 'prt_keep.new-123')
+  fs.mkdirSync(path.dirname(keep), { recursive: true })
+  fs.writeFileSync(keep, 'preuve publiée à conserver\n')
+  // temporaires orphelins d'un crash + marqueur d'ingestion non réconciliée.
+  const temps = [
+    shardPath(root, 'ses_fix1') + '.new-999',
+    path.join(root, 'events', 'aa', 'ses_orphan.jsonl.new-999'),
+    keep + '.new-999',
+    path.join(root, 'state.json.tmp-999'),
+    path.join(root, 'index.db.new')
+  ]
+  for (const f of temps) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'orphelin') }
+  fs.writeFileSync(path.join(root, '.ingest-in-progress'), JSON.stringify({ startedAt: 'test' }) + '\n')
+
+  const r = recover(root)
+  assert.equal(r.done, true)
+  assert.ok(r.swept >= temps.length, `temporaires ramassés (${r.swept})`)
+  for (const f of temps) assert.equal(fs.existsSync(f), false, `temporaire ramassé : ${f}`)
+  assert.equal(ingestRunning(root), false, 'marqueur retiré par recover')
+  assert.ok(fs.existsSync(keep), 'preuve publiée dont l’id contient .new- conservée')
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8')).sources, sources,
+    'watermark conservé')
+  for (const [rel, bytes] of shardBytes) {
+    assert.deepEqual(fs.readFileSync(path.join(root, rel)), bytes, `shard publié intact : ${rel}`)
+  }
 })

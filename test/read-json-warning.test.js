@@ -177,7 +177,9 @@ test('sans marqueur : search et search --raw n’affichent pas l’avertissement
   const plain = run(['revert', '--raw'])
   assert.equal(plain.status, 0, plain.stderr)
   assert.ok(!plain.stdout.includes(WARN))
-  assert.equal(plain.stderr, '')
+  // correctif lot A : le scan --raw affiche sa durée sur stderr par défaut ;
+  // l'assertion porte donc sur l'ABSENCE DE L'AVERTISSEMENT, pas sur un stderr vide.
+  assert.ok(!plain.stderr.includes(WARN), 'aucun avertissement sur stderr')
   const json = run(['revert', '--raw', '--json'])
   assert.equal(json.status, 0, json.stderr)
   assert.equal(json.stderr, '', 'aucun avertissement sans marqueur')

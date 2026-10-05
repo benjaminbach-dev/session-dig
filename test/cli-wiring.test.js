@@ -27,11 +27,17 @@ const cli = fileURLToPath(new URL('../bin/sdig.js', import.meta.url))
 before(async () => { buildFixtureDb(source); await ingest({ root, db: source }) })
 after(() => fs.rmSync(tmp, { recursive: true, force: true }))
 
-function run(args, binary = false) {
+// Résultat brut : les commandes de preuve brute affichent leur durée sur stderr
+// (correctif lot A) — `run` garde l'exigence « stderr vide » des commandes ordinaires.
+function runProc(args, binary = false) {
   const r = spawnSync(process.execPath, [cli, ...args, '--home', root], {
     encoding: binary ? null : 'utf8', timeout: 8000, maxBuffer: 8 << 20
   })
   assert.ifError(r.error)
+  return r
+}
+function run(args, binary = false) {
+  const r = runProc(args, binary)
   assert.equal(r.status, 0, String(r.stderr))
   assert.equal(String(r.stderr), '')
   return r.stdout
@@ -61,9 +67,22 @@ test('CLI : raw reproduit les octets sur plusieurs blocs', () => {
   for (let i = 0; i < bytes.length; i++) bytes[i] = i % 256
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, bytes)
-  assert.deepEqual(run(['raw', 'prt_wiring'], true), bytes)
+  const r = runProc(['raw', 'prt_wiring'], true)
+  assert.equal(r.status, 0, String(r.stderr))
+  assert.deepEqual(r.stdout, bytes, 'stdout = preuve seule, inchangée')
+  // correctif lot A : durée/volume par défaut sur stderr, jamais dans stdout.
+  assert.match(String(r.stderr), /\(\d+ ms, \d+ o\)/, 'durée et volume affichés sur stderr')
 })
-test('CLI : --raw atteint le scanner sans ancien export', () => {
+test('CLI : --raw atteint le scanner sans ancien export, durée par défaut sur stderr', () => {
   // Aucun diagnostic sur la justesse de scanText ici : réservée au lot 2.
-  assert.equal(run(['zzzzabsentlotun', '--raw']), 'aucun résultat (ni index, ni sorties brutes)\n')
+  const r = runProc(['zzzzabsentlotun', '--raw'])
+  assert.equal(r.status, 0, String(r.stderr))
+  assert.equal(r.stdout, 'aucun résultat (ni index, ni sorties brutes)\n', 'stdout inchangé')
+  assert.match(String(r.stderr), /scan raw : \d+ ms/, 'durée du scan sur stderr par défaut')
+})
+test('CLI : --raw --json : stdout = JSON unique non pollué (aucune durée dans le JSON)', () => {
+  const r = runProc(['revert', '--raw', '--json'])
+  assert.equal(r.status, 0, String(r.stderr))
+  assert.doesNotThrow(() => JSON.parse(r.stdout))
+  assert.ok(!r.stdout.includes('scan raw'), 'durée hors stdout')
 })

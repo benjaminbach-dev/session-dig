@@ -26,7 +26,8 @@ Usage:
   sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--at <ancre>] [--full | --chars N] [--json]
                                 dérouler une session autour d'un message, éventuellement
                                 bornée dans le temps (--at : id de message, date, ou epoch ms)
-  sdig raw <partId>            afficher une sortie d'outil brute (preuve, lecture par blocs)
+  sdig raw <partId>            afficher une sortie d'outil brute (preuve, lecture par blocs ;
+                               durée et volume affichés sur stderr, jamais dans stdout)
   sdig ingest [--db P] [--rebuild] [--recover]
                                 source → corpus (incrémental par défaut ; --recover :
                                 reprise explicite sans source, décision d'opérateur)
@@ -70,8 +71,8 @@ Filtres de recherche :
                  affiché (jamais de masquage silencieux).
                  Hors périmètre : aucune détection des changements d'état.
   --raw          cherche aussi dans les sorties brutes (stderr inclus ; scan en flux
-                 par blocs — coût O(volume de raw/), durée affichée ; borné par
-                 --source ; non combiné avec --json, qui rend les hits seuls)
+                 par blocs — coût O(volume de raw/), durée affichée sur stderr ; borné
+                 par --source ; non combiné avec --json, qui rend les hits seuls)
   --full         texte intégral des messages (lève la limite d'affichage ; read, --ctx, hits)
   --chars N      limite d'affichage par message en caractères (défaut : 400 + 4 lignes)
   --json         sortie JSON (script/tests ; texte intégral des messages dans le champ text)
@@ -498,7 +499,10 @@ async function main () {
       while (offset < blk.length) offset += fs.writeSync(1, blk, offset, blk.length - offset)
     })
     fs.closeSync(opened.fd)
-    if (process.env.SDIG_RAW_TIMING) process.stderr.write(`  (${(performance.now() - t0).toFixed(0)} ms, ${bytes} o)\n`)
+    // Durée/volume d'affichage de la preuve : mesure d'honnêteté, affichée PAR DÉFAUT
+    // sur stderr — jamais dans stdout (les octets de la preuve y sont écrits tels
+    // quels ; un appelant qui redirige stdout ne voit aucun décor supplémentaire).
+    process.stderr.write(`  (${(performance.now() - t0).toFixed(0)} ms, ${bytes} o)\n`)
     return
   }
 
@@ -595,10 +599,11 @@ async function main () {
       const t0 = performance.now()
       const matches = rawScan(paths.root, q, { limit: 10, source: sourceFlag })
       const dt = performance.now() - t0
-      if (matches.length) {
-        console.log(renderRawHits(matches))
-        if (process.env.SDIG_RAW_TIMING || flags.json) console.error(`  scan raw : ${dt.toFixed(0)} ms`)
-      } else if (!hits.length) console.log('aucun résultat (ni index, ni sorties brutes)')
+      if (matches.length) console.log(renderRawHits(matches))
+      else if (!hits.length) console.log('aucun résultat (ni index, ni sorties brutes)')
+      // Durée du scan affichée PAR DÉFAUT sur stderr (même sans match : le coût
+      // O(raw/) a été payé) — stdout reste le rendu des hits, jamais pollué.
+      console.error(`  scan raw : ${dt.toFixed(0)} ms`)
     }
   } finally {
     db.close()
