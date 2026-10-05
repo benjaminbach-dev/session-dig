@@ -8,8 +8,9 @@
 > `boundedText` sur `searchChrono`/`browseChrono` (extraits SQL bornés, chemins CLI
 > inchangés), tests synthétiques (`test/mcp-chrono.test.js`) et `docs/mcp.md`. Les
 > formulations « documentaire », « non implémenté ici » et « aucune ligne de code »
-> décrivent la **phase spec historique**. **Aucune validation PC ni MCP sur corpus réel**
-> n'est revendiquée, et **aucun archivage** n'a eu lieu : voir `tasks.md`.
+> décrivent la **phase spec historique**. La **revalidation ciblée PC/MCP sur
+> corpus réel** a ensuite été effectuée après reload : [bilan](validation-pc-2026-10-05.md).
+> Aucun banc complet rejoué ni archivage : voir `tasks.md`.
 
 ## Pourquoi
 
@@ -43,5 +44,5 @@ Ce change est **documentaire** : il fige le cadrage minimal d'un tri chronologiq
 > **État au 05/10/2026** : phase spec livrée, puis **implémentation locale effectuée**
 > sur autorisation explicite. `add-mcp-server` doit être archivé AVANT ce change ;
 > ni ce change ni `add-mcp-server` ne sont archivés. La revue principale et la
-> validation synthétique locale sont terminées ; la validation PC/MCP sur corpus
-> réel et l'archivage restent **ouverts**.
+> validation synthétique locale sont terminées, ainsi que la revalidation ciblée
+> PC/MCP sur corpus réel. Le jalon J-MCP plein et l'archivage restent **ouverts**.

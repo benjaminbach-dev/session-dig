@@ -3,12 +3,12 @@
 > **Historique** : la première phase de ce change était **documentaire** (cadrage
 > seul, aucun code). **Mise à jour du 05/10/2026** : l'utilisateur a autorisé
 > explicitement l'implémentation effective. La phase 1 (spec) reste livrée et
-> inchangée ; la **phase 2 (implémentation) est désormais ouverte et réalisée
-> localement** (moteur opt-in `boundedText` sur `searchChrono`/`browseChrono`,
-> schémas/validation/handler MCP, tests synthétiques, docs). Aucune donnée réelle,
-> aucun archivage, et **aucune validation PC ni MCP sur corpus réel** n'est revendiquée : ces
-> points restent ouverts (phase 3). L'ordre d'archivage (**`add-mcp-server` d'abord,
-> puis ce change**) reste inchangé.
+> inchangée ; la **phase 2 (implémentation) est réalisée et relue** (moteur opt-in
+> `boundedText` sur `searchChrono`/`browseChrono`, schémas/validation/handler MCP,
+> tests synthétiques, docs). **Revalidation ciblée PC/MCP sur corpus réel effectuée**
+> après reload : [bilan](validation-pc-2026-10-05.md). Aucun contenu privé n'est
+> ajouté au dépôt, aucun archivage ni nouveau score du banc complet. L'ordre
+> d'archivage (**`add-mcp-server` d'abord, puis ce change**) reste inchangé.
 
 ## 1. Phase spec (ce change uniquement)
 
@@ -22,7 +22,8 @@
 
 > **Implémentation effective autorisée par l'utilisateur le 05/10/2026.** Toutes les
 > cases ci-dessous sont cochées sur la base de modifications réelles et de tests
-> synthétiques locaux. Aucune validation PC ni MCP sur corpus réel ; aucun archivage. L'ordre
+> synthétiques locaux ; la validation réelle ultérieure est distincte (phase 3).
+> Aucun archivage. L'ordre
 > d'archivage (**`add-mcp-server` d'abord**, puis ce change) reste requis.
 
 - [x] 2.1 Épingler le cadrage avec le principal avant tout code : `sort` à valeurs fermées (`relevance` défaut), `query` optionnelle **uniquement** en `oldest`/`newest`, aucune pagination ni curseur, aucun outil nouveau.
@@ -40,4 +41,5 @@
 - [x] 3.1 Validation OpenSpec ciblée `openspec validate add-mcp-chrono --strict --no-interactive` et globale `--specs --changes --strict --no-interactive`, `git diff --check` propre.
 - [x] 3.2 Relecture du principal sur les quatre artefacts, cohérence avec `add-mcp-server` (ordre d'archivage : **`add-mcp-server` d'abord, puis ce change**) et `add-cli-chronological-sort` (réutilisation sémantique, sans dépendance d'archivage). Réalisée le 05/10/2026 après corrections ; points ouverts tranchés par le principal : `score` nullable uniquement en exploration (adaptation documentée acceptée), un seul `MODIFIED` (les autres exigences sont couvertes par les `ADDED`), extraits d'exploration par `substr` SQL borné avec indicateurs de coupure.
 - [x] 3.3 Revue du principal sur l'implémentation le 05/10/2026 : diff relu, omission physique durcie (`query: undefined` refusée), description complétée (score diagnostique, modèle absent, ordre global), tests renforcés (20 chrono : budget sous pression, commandes Unicode, vue périmée, exploration newest). Validation principale : **270/270** tests ciblés MCP + search-engine/search/cli-chrono, OpenSpec ciblé/global **8/8**, `git diff --check` propre.
-- [ ] 3.4 Validation PC / MCP sur corpus réel et archivage (**`add-mcp-server` d'abord**) — **non encore réalisés**.
+- [x] 3.4 Validation ciblée PC / MCP sur corpus réel après lancement manuel et reload — [bilan du 05/10](validation-pc-2026-10-05.md) : cas modèle retrouvé sans query, ordres oldest/newest, bornes, score null/numérique, source pi/fidélité, référence read, relevance inchangé sur la requête exercée, refus invalid_params. Ni banc hermétique complet ni intégrité bitwise ni stress réel sous budget revalidés.
+- [ ] 3.5 Archivage (**`add-mcp-server` d'abord**) et décision de clôture — **non réalisés** ; aucun J-MCP plein annoncé par cette revalidation ciblée.

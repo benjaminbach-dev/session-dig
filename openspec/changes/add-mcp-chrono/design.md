@@ -7,8 +7,9 @@
 > exploration, projections partagées de `relevance`, chemins CLI par défaut
 > inchangés), schémas/validation/handler MCP, tests synthétiques et `docs/mcp.md`.
 > Les mentions « documentaire », « sans implémenter » et « aucun test de code » ci-
-> dessous décrivent la **phase spec historique**. **Aucune validation PC ni MCP sur corpus réel**
-> n'est revendiquée ; `tasks.md` fait foi pour l'état des tâches.
+> dessous décrivent la **phase spec historique**. La revalidation ciblée PC/MCP
+> sur corpus réel est désormais [consignée](validation-pc-2026-10-05.md), sans
+> rejouer le banc complet ni archiver ; `tasks.md` fait foi pour l'état des tâches.
 
 ## D0 — Ce que ce change est et n'est pas
 
@@ -102,4 +103,4 @@ L'implémentation future devra fournir des tests **synthétiques décisifs** (fi
 - préservation : top-k sans curseur (`cursor` refusé), `total` exact/null, enveloppe 524 288, extraits référencés, fidélité pi, référencement read ; vue absente/périmée → `view_unavailable` ;
 - non-régression : mode `relevance` par défaut (score numérique, ordre BM25) et tests MCP existants inchangés.
 
-Validation LOCALE d'implémentation (faite le 05/10/2026) : `test/mcp-chrono.test.js` (20 tests synthétiques), suites `search-engine` et `cli-chrono` (moteur touché) et `openspec validate --specs --changes --strict --no-interactive`. **Aucune validation PC ni MCP sur corpus réel**, aucun jeu de données réel ni réplique gelée dans le dépôt.
+Validation LOCALE d'implémentation (faite le 05/10/2026) : `test/mcp-chrono.test.js` (20 tests synthétiques), suites `search-engine` et `cli-chrono` (moteur touché) et `openspec validate --specs --changes --strict --no-interactive`. Cette validation synthétique précède la [revalidation ciblée PC/MCP sur corpus réel](validation-pc-2026-10-05.md). Aucun jeu de données réel ni réplique gelée dans le dépôt.
