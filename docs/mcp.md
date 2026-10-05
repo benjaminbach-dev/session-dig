@@ -56,9 +56,28 @@ rendues (search/read, y compris une lecture vide à l'ancre).
 
 ## Outils, bornes et unités
 
-- **`sdig_search`** : top-k borné (≤ 50 hits), **sans pagination ni curseur**. Chaque
-  hit porte un extrait référencé vers `sdig_read` ; les titres référencent la seule
-  session. `total` inconnu = `null`, jamais estimé.
+- **`sdig_search`** : top-k borné (≤ 50 hits), **sans pagination ni curseur**.
+  `sort` vaut `relevance` (défaut), `oldest` ou `newest` (valeurs **fermées**) ; en
+  `oldest`/`newest`, les matches filtrés sont sélectionnés **en entier** puis
+  ordonnés `(ts, id)` **avant** `limit` (jamais un top-k BM25 déjà réduit), et
+  `query` peut être **omise** pour explorer sans mots-clés. Une requête fournie
+  vide, en espaces ou sans terme exploitable est refusée (`invalid_params`),
+  **jamais** convertie en exploration : seule l'omission **physique** de `query`
+  l'active, et `relevance` sans `query` est refusée. `score` est numérique en
+  `relevance` (inchangé) et en chrono **avec** requête (diagnostic BM25) ; il vaut
+  `null` **uniquement** en exploration sans requête. Chaque hit porte un extrait
+  borné référencé vers `sdig_read` ; les titres référencent la seule session.
+  `hits` porte l'ordre global ; `groups` est seulement un index par session.
+  `total` est exact si la sélection contient moins de `limit` matches, sinon
+  `null`, jamais estimé ; une réduction d'enveloppe ne change pas ce total.
+- **Exploration sans mots-clés** (`sort: oldest|newest`, `query` omise) : aucun
+  `MATCH` FTS, donc aucune requête `'*'` inventée. Le sous-ensemble est canonique —
+  intersection `role ∈ {user, assistant}` ∩ filtre `role` éventuel : `role: title`
+  ou inconnu rend **zéro hit**, jamais une ligne de titre. Les événements à texte
+  vide ou à commandes seules sont **inclus** ; `model` absent reste `null` explicite
+  et `score` vaut `null`. Le filtre `source` porte sur la **provenance archivée** :
+  une source archivée dont la base d'origine a disparu reste cherchable, une source
+  inconnue rend zéro hit, sans aucune lecture de la source d'origine.
 - **`sdig_read`** : pagination **KEYSET** par fragments. Offsets et `end` en
   **points de code Unicode**, `end` **exclu**, encodage **UTF-8** déclaré. `chars`
   défaut **400**, `full` = **20 000** ; page ≤ **200 messages distincts** et

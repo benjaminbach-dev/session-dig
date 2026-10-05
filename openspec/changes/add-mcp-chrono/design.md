@@ -1,5 +1,15 @@
 # Design — add-mcp-chrono
 
+> **Mise à jour du 05/10/2026 — phase implémentation.** Ce design a d'abord fixé un
+> cadrage **documentaire**. Sur autorisation explicite de l'utilisateur, la feature a
+> ensuite été **implémentée localement** conformément à ces décisions : option opt-in
+> `boundedText` ajoutée à `searchChrono`/`browseChrono` (extraits SQL bornés côté
+> exploration, projections partagées de `relevance`, chemins CLI par défaut
+> inchangés), schémas/validation/handler MCP, tests synthétiques et `docs/mcp.md`.
+> Les mentions « documentaire », « sans implémenter » et « aucun test de code » ci-
+> dessous décrivent la **phase spec historique**. **Aucune validation PC ni MCP sur corpus réel**
+> n'est revendiquée ; `tasks.md` fait foi pour l'état des tâches.
+
 ## D0 — Ce que ce change est et n'est pas
 
 Ce change est **documentaire** : il fige le cadrage minimal d'un tri chronologique dans les outils MCP, sans implémenter quoi que ce soit. Il ne touche ni au scoring BM25, ni au schéma du corpus, ni au CLI, ni au mode `relevance`, ni au curseur de `sdig_read`. Il ne prétend pas que la feature est livrée, ni que le MCP atteindra l'exhaustivité.
@@ -92,4 +102,4 @@ L'implémentation future devra fournir des tests **synthétiques décisifs** (fi
 - préservation : top-k sans curseur (`cursor` refusé), `total` exact/null, enveloppe 524 288, extraits référencés, fidélité pi, référencement read ; vue absente/périmée → `view_unavailable` ;
 - non-régression : mode `relevance` par défaut (score numérique, ordre BM25) et tests MCP existants inchangés.
 
-Validation documentaire : `openspec validate add-mcp-chrono --strict --no-interactive`, puis `openspec validate --specs --changes --strict --no-interactive`. **Aucun test de code n'est lancé par ce change.**
+Validation LOCALE d'implémentation (faite le 05/10/2026) : `test/mcp-chrono.test.js` (20 tests synthétiques), suites `search-engine` et `cli-chrono` (moteur touché) et `openspec validate --specs --changes --strict --no-interactive`. **Aucune validation PC ni MCP sur corpus réel**, aucun jeu de données réel ni réplique gelée dans le dépôt.

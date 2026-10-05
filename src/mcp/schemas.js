@@ -23,13 +23,21 @@ const safeInt = z.number().int().safe()
 const epochMs = z.number().int().safe().min(0).max(MAX_DATE_EPOCH_MS)
 const queryString = z.string().min(1).max(MAX_QUERY_CHARS)
   .refine(v => EXPLOITABLE.test(v), { message: 'requête sans terme exploitable' })
+// Valeurs FERMÉES du tri : `relevance` (défaut) | `oldest` | `newest`. La règle
+// croisée (`query` obligatoire hors chrono) est appliquée par validate.js.
+const searchSortSchema = z.enum(['relevance', 'oldest', 'newest'])
 const filterString = (max = MAX_FILTER_CHARS) => z.string().min(1).max(max)
 const timeBound = z.union([epochMs, filterString(MAX_BOUND_CHARS)])
 
 // ── Entrées (strictes) ──────────────────────────────────────────────────────
 
 export const searchInputSchema = z.object({
-  query: queryString,
+  // `query` est STRUCTURELLEMENT optionnelle (contrainte croisée avec `sort`
+  // appliquée par validate.js) : en `oldest`/`newest` son OMISSION PHYSIQUE
+  // active l'exploration sans mots-clés ; une valeur fournie vide ou sans terme
+  // exploitable reste refusée, jamais transformée en exploration.
+  query: queryString.optional(),
+  sort: searchSortSchema.optional(),
   repo: filterString().optional(),
   session: filterString().optional(),
   after: timeBound.optional(),
@@ -110,6 +118,9 @@ export const searchRefSchema = z.object({
   messageId: z.string().nullable()
 })
 
+// `score` : NUMÉRIQUE en `relevance` (inchangé) et en chrono AVEC requête
+// (diagnostic BM25) ; `null` UNIQUEMENT en exploration sans `query` (BM25 non
+// calculé). Élargissement documenté du domaine, jamais un score inventé.
 export const searchHitSchema = z.object({
   kind: z.enum(['message', 'title']),
   ref: searchRefSchema,
@@ -121,7 +132,7 @@ export const searchHitSchema = z.object({
   agent: z.string().nullable().optional(),
   repo: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
-  score: z.number(),
+  score: z.number().nullable(),
   excerpt: excerptSchema,
   cost: z.number().optional()
 }).passthrough()
@@ -292,6 +303,14 @@ export const TOOL_DESCRIPTIONS = Object.freeze({
     'v0 portent `agent: null`, donc un agent non nul les exclut. Chaque hit porte une',
     'référence read (session + message ; un titre référence la session seule) et un',
     'extrait signalé comme tel ; les voisins de contexte sont séparés et référencés.',
+    '`sort` vaut `relevance` (défaut), `oldest` ou `newest` (valeurs fermées) ;',
+    'en `oldest`/`newest`, les matches filtrés sont sélectionnés en ENTIER puis',
+    'ordonnés chronologiquement `(ts, id)` AVANT `limit`, et `query` peut être OMISE',
+    'pour explorer les événements user/assistant sans mots-clés (alors `score` vaut',
+    '`null` et un modèle absent reste `model: null`). Sinon `query` est obligatoire ;',
+    'le score BM25 reste numérique, diagnostique en chrono. Une requête fournie',
+    'vide ou sans terme exploitable est refusée, jamais transformée en exploration.',
+    '`hits` porte l’ordre global ; `groups` est seulement un index de sessions.',
     'L\'ancrage temporel ne reconstruit ni la branche pi retenue ni le contexte',
     'effectif : branches pi aplaties par ordre temporel et `context_edit` non appliqué.',
     'CONFIDENTIALITÉ : le contenu peut inclure des secrets et ce que renvoie',

@@ -11,7 +11,7 @@
 // chargés ; seuls des extraits bornés et des longueurs le sont — le texte complet
 // s'obtient par `sdig_read`. Aucun chemin local n'est rendu.
 import { openReadSnapshot } from './data.js'
-import { search, searchNeighbors, isSearchQueryError, MAX_BOUNDED_EXCERPT_CHARS } from '../retriever/bm25.js'
+import { search, searchChrono, browseChrono, searchNeighbors, isSearchQueryError, MAX_BOUNDED_EXCERPT_CHARS } from '../retriever/bm25.js'
 import { measureSerialized } from './budget.js'
 import {
   RESPONSE_BUDGET_BYTES,
@@ -169,22 +169,35 @@ function runSearch (view, value, adaptations, freshness) {
   const limit = Number.isInteger(value.limit) && value.limit >= 1 ? value.limit : DEFAULT_SEARCH_LIMIT
   const ctx = Number.isInteger(value.ctx) && value.ctx > 0 ? Math.min(value.ctx, MAX_SEARCH_CTX) : 0
 
+  // Aiguillage sur `sort` : `relevance` (défaut) STRICTEMENT inchangé ; en
+  // `oldest`/`newest`, sélection GLOBALE puis ordre chrono. L'exploration sans
+  // mots-clés (`browseChrono`) n'est activée que par l'OMISSION physique de
+  // `query` (portée par `validateSearchInput` comme `null`) : une requête fournie
+  // mais invalide est refusée en amont ou par le moteur, jamais transformée.
+  const sort = value.sort === 'oldest' || value.sort === 'newest' ? value.sort : 'relevance'
+  const hasQuery = value.query != null
+
+  const filters = {
+    repo: value.repo ?? null,
+    session: value.session ?? null,
+    after: value.after ?? null,
+    before: value.before ?? null,
+    model: value.model ?? null,
+    role: value.role ?? null,
+    agent: value.agent ?? null,
+    source: value.source ?? null,
+    limit
+  }
+
   let raw
   try {
-    raw = search(view, {
-      q: value.query,
-      repo: value.repo ?? null,
-      session: value.session ?? null,
-      after: value.after ?? null,
-      before: value.before ?? null,
-      model: value.model ?? null,
-      role: value.role ?? null,
-      agent: value.agent ?? null,
-      source: value.source ?? null,
-      limit,
-      plain: true,
-      boundedText: true
-    })
+    if (sort !== 'relevance' && !hasQuery) {
+      raw = browseChrono(view, { ...filters, sort, boundedText: true })
+    } else if (sort !== 'relevance') {
+      raw = searchChrono(view, { ...filters, q: value.query, sort, plain: true, boundedText: true })
+    } else {
+      raw = search(view, { ...filters, q: value.query, plain: true, boundedText: true })
+    }
   } catch (err) {
     // Requête sans terme exploitable (stopwords/ponctuation) : c'est une ENTRÉE
     // invalide, jamais une erreur interne. Tout le reste est borné par le moteur.

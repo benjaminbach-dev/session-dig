@@ -1,5 +1,16 @@
 # Change add-mcp-chrono
 
+> **Mise à jour du 05/10/2026 — phase implémentation.** Ce change a d'abord été
+> **documentaire** (le cadrage ci-dessous reste la référence). Sur autorisation
+> **explicite** de l'utilisateur, il a ensuite été **implémenté localement** :
+> `sort` fermé sur `sdig_search`, `query` optionnelle en `oldest`/`newest`,
+> exploration sans mots-clés, `score: null` en exploration, option opt-in
+> `boundedText` sur `searchChrono`/`browseChrono` (extraits SQL bornés, chemins CLI
+> inchangés), tests synthétiques (`test/mcp-chrono.test.js`) et `docs/mcp.md`. Les
+> formulations « documentaire », « non implémenté ici » et « aucune ligne de code »
+> décrivent la **phase spec historique**. **Aucune validation PC ni MCP sur corpus réel**
+> n'est revendiquée, et **aucun archivage** n'a eu lieu : voir `tasks.md`.
+
 ## Pourquoi
 
 Les outils MCP (`sdig_search`, `sdig_read`, `sdig_status`, change `add-mcp-server`) exposent aujourd'hui la recherche en **top-k de pertinence BM25** : `sdig_search` exige une requête plein texte (`invalid_params` sans terme exploitable), classe par pertinence et ne trie ni ne parcourt la chronologie. Le tri chronologique existe pourtant dans le **CLI** (`--sort relevance|oldest|newest`, exploration sans mots-clés), cadré par le change `add-cli-chronological-sort` et implémenté localement ; il n'est **pas** exposé par le MCP.
@@ -24,9 +35,13 @@ Ce change est **documentaire** : il fige le cadrage minimal d'un tri chronologiq
 ## Impact
 
 - **Specs seulement** : `proposal.md`, `design.md`, `tasks.md` et delta `specs/mcp/spec.md` (un `MODIFIED`, trois `ADDED`). Aucune modification de `openspec/specs/` ni du delta `add-mcp-server`.
-- **Code (futur, non implémenté ici)** : `src/mcp/schemas.js` (paramètre `sort`, `query` optionnelle, `score` nullable), `src/mcp/validate.js` (règle croisée `query`/`sort`), `src/mcp/search.js` (aiguillage `search`/`searchChrono`/`browseChrono`, extraits bornés sans `snippet()` en exploration), description de `sdig_search`. **Aucune ligne de code n'est écrite par ce change documentaire.**
+- **Code (implanté le 05/10/2026)** : `src/retriever/bm25.js` (option opt-in `boundedText` sur `searchChrono`/`browseChrono`, projections partagées de `relevance`, `browse` par `substr` borné et indicateurs de coupure exacts), `src/mcp/schemas.js` (paramètre `sort`, `query` optionnelle, `score` nullable, description), `src/mcp/validate.js` (règle croisée `query`/`sort`), `src/mcp/search.js` (aiguillage `search`/`searchChrono`/`browseChrono`). Les chemins CLI existants restent identiques (option par défaut `boundedText: false`).
 - **Non-régression** : mode `relevance` (défaut) strictement inchangé, aucun nouveau filtre, aucun changement du CLI, de `sdig_read`, de `sdig_status`, ni du curseur de lecture. Les tests MCP existants ne bougent pas tant que l'implémentation n'est pas commandée.
 - **Hors périmètre** : curseur/pagination de recherche (extension déjà listée hors jalon), outil MCP de preuves brutes (`sdig_raw`), sous-commande nouvelle, embeddings/RRF, modification du scoring BM25, changement du CLI.
 - **Confidentialité** : inchangée (archive locale, lecture seule, aucun egress). L'exploration élargit la **sélection** aux messages sans mot-clé mais ne change ni le budget de réponse, ni les journaux, ni l'absence d'authentification des clients locaux.
 
-> **État au 05/10/2026** : cadrage documentaire seulement. `add-mcp-server` doit être archivé AVANT ce change ; ni ce change ni `add-mcp-server` ne sont archivés. Le jalon PC et la validation locale de `add-mcp-server` restent ouverts.
+> **État au 05/10/2026** : phase spec livrée, puis **implémentation locale effectuée**
+> sur autorisation explicite. `add-mcp-server` doit être archivé AVANT ce change ;
+> ni ce change ni `add-mcp-server` ne sont archivés. La revue principale et la
+> validation synthétique locale sont terminées ; la validation PC/MCP sur corpus
+> réel et l'archivage restent **ouverts**.

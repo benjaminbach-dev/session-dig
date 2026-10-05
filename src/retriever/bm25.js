@@ -111,6 +111,33 @@ function filterSql (query) {
 // message du design D3 (20 000 caractères).
 export const MAX_BOUNDED_EXCERPT_CHARS = 20000
 
+// ── Projections PARTAGÉES du mode `boundedText` (opt-in) ───────────────────────
+// Réutilisées par `search` (pertinence) et `searchChrono` (chrono AVEC mots-clés)
+// pour garantir des extraits STRICTEMENT identiques : seul l'ORDER BY diffère.
+const BOUNDED_INNER_TEXT = 'length(e.text) AS textLen, length(e.cmd) AS cmdLen'
+// Indicateurs EXACTS (opt-in) décidés CÔTÉ SQL, avant tout transfert : l'égalité
+// STRICTE `snippet == colonne` (jamais une comparaison de longueurs — une ellipse
+// FTS ou une fenêtre `tokens` peut tromper une longueur) et la variante `cmd` SANS
+// marqueurs pour les hits à commande seule.
+const BOUNDED_INNER_EXTRA = `,
+               snippet(events_fts, 1, '', '', '…', 14) AS snipCmdPlain,
+               CASE WHEN e.text IS NOT NULL AND snippet(events_fts, 0, '', '', '…', 14) = e.text THEN 1 ELSE 0 END AS snipFull,
+               CASE WHEN e.cmd IS NOT NULL AND snippet(events_fts, 1, '', '', '…', 14) = e.cmd THEN 1 ELSE 0 END AS snipCmdFull`
+// `substr(..., @snipChars)` coupe les extraits DANS SQLITE et `length(...)` expose
+// les longueurs RÉELLES (non bornées) de chaque extrait, pour qu'une façade puisse
+// signaler la coupure exactement sans réestimer.
+const BOUNDED_OUTER_PROJECTION = `id, session_id, ts, role, agent, repo, model, textLen, cmdLen, source,
+         substr(snip, 1, @snipChars) AS snip, length(snip) AS snipLen,
+         substr(snipPlain, 1, @snipChars) AS snipPlain, length(snipPlain) AS snipPlainLen,
+         CASE WHEN length(snipPlain) > @snipChars THEN 1 ELSE 0 END AS snipPlainCut,
+         snipFull,
+         substr(snipCmdPlain, 1, @snipChars) AS snipCmdPlain, length(snipCmdPlain) AS snipCmdPlainLen,
+         snipCmdFull,
+         substr(snipCmd, 1, @snipChars) AS snipCmd, length(snipCmd) AS snipCmdLen,
+         score`
+const FULL_OUTER_PROJECTION = `id, session_id, ts, role, agent, repo, model, cmd, text, source,
+         snip, snipPlain, snipCmd, score`
+
 /**
  * search(view, { q, repo, session, after, before, model, role, agent, source, limit, plain, boundedText })
  * → hits ordonnés par rang BM25 (croissant = meilleur), départage des rangs
@@ -148,34 +175,9 @@ export function search (view, query) {
     // Projection des textes : par défaut les colonnes complètes ; en mode borné
     // (opt-in MCP) seules les LONGUEURS sont transférées, jamais `e.text`/`e.cmd`.
     const boundedText = query.boundedText === true
-    const innerText = boundedText
-      ? 'length(e.text) AS textLen, length(e.cmd) AS cmdLen'
-      : 'e.cmd, e.text'
-    // Indicateurs EXACTS (opt-in) décidés CÔTÉ SQL, avant tout transfert : l'égalité
-    // STRICTE `snippet == colonne` (jamais une comparaison de longueurs — une
-    // ellipse FTS ou une fenêtre `tokens` peut tromper une longueur) et la variante
-    // `cmd` SANS marqueurs pour les hits à commande seule.
-    const innerExtra = boundedText
-      ? `,
-               snippet(events_fts, 1, '', '', '…', 14) AS snipCmdPlain,
-               CASE WHEN e.text IS NOT NULL AND snippet(events_fts, 0, '', '', '…', 14) = e.text THEN 1 ELSE 0 END AS snipFull,
-               CASE WHEN e.cmd IS NOT NULL AND snippet(events_fts, 1, '', '', '…', 14) = e.cmd THEN 1 ELSE 0 END AS snipCmdFull`
-      : ''
-    // En mode borné, `substr(..., @snipChars)` coupe les extraits DANS SQLITE et
-    // `length(...)` expose les longueurs RÉELLES (non bornées) de chaque extrait,
-    // pour qu'une façade puisse signaler la coupure exactement sans réestimer.
-    const outerProjection = boundedText
-      ? `id, session_id, ts, role, agent, repo, model, textLen, cmdLen, source,
-         substr(snip, 1, @snipChars) AS snip, length(snip) AS snipLen,
-         substr(snipPlain, 1, @snipChars) AS snipPlain, length(snipPlain) AS snipPlainLen,
-         CASE WHEN length(snipPlain) > @snipChars THEN 1 ELSE 0 END AS snipPlainCut,
-         snipFull,
-         substr(snipCmdPlain, 1, @snipChars) AS snipCmdPlain, length(snipCmdPlain) AS snipCmdPlainLen,
-         snipCmdFull,
-         substr(snipCmd, 1, @snipChars) AS snipCmd, length(snipCmd) AS snipCmdLen,
-         score`
-      : `id, session_id, ts, role, agent, repo, model, cmd, text, source,
-         snip, snipPlain, snipCmd, score`
+    const innerText = boundedText ? BOUNDED_INNER_TEXT : 'e.cmd, e.text'
+    const innerExtra = boundedText ? BOUNDED_INNER_EXTRA : ''
+    const outerProjection = boundedText ? BOUNDED_OUTER_PROJECTION : FULL_OUTER_PROJECTION
 
     // Sous-requête : les trois `snippet()` sont calculés UNE fois par ligne, puis
     // bornés/jaugés dans la projection externe. Le tri binaire des rangs égaux
@@ -205,7 +207,7 @@ export function search (view, query) {
 }
 
 /**
- * searchChrono(view, { q, sort: 'oldest'|'newest', ...filtres, limit, plain })
+ * searchChrono(view, { q, sort: 'oldest'|'newest', ...filtres, limit, plain, boundedText })
  * → hits AVEC mots-clés ordonnés CHRONOLOGIQUEMENT sur l'ENSEMBLE des matches
  * filtrés (sélection globale, puis `LIMIT`), jamais sur un top-k BM25 réutilisé.
  * La clause de matching (`ftsQuery(q, 'OR')` : stopwords fr+en, tokenizer unicode,
@@ -213,6 +215,10 @@ export function search (view, query) {
  * `search()` ; seul l'`ORDER BY` change : `(e.ts, e.id COLLATE BINARY)` dans le
  * sens demandé. `rank` (BM25) reste projeté en `score` DIAGNOSTIC (numérique),
  * sans jamais intervenir dans l'ordre. `ts = 0` est une valeur valide.
+ * `boundedText` (opt-in, défaut `false`, CLI compatible) : mêmes projections
+ * BORNÉES que `search()` (longueurs réelles, extraits coupés DANS SQL, indicateurs
+ * exacts `snipFull`/`snipCmdFull`) ; les colonnes `text`/`cmd` complètes ne sont
+ * alors PAS chargées. Chemin CLI par défaut inchangé.
  */
 export function searchChrono (view, query) {
   const own = typeof view === 'string'
@@ -225,7 +231,25 @@ export function searchChrono (view, query) {
     const close = query.plain ? '«' : '\x1b[0m'
     const { clauses, params: filterParams } = filterSql(query)
     const where = ['events_fts MATCH @match', ...clauses]
-    const sql = `
+    const boundedText = query.boundedText === true
+    // Sélection GLOBALE des matches filtrés puis ordre (ts, id BINARY) AVANT la limite.
+    const sql = boundedText
+      ? `
+      SELECT ${BOUNDED_OUTER_PROJECTION}
+      FROM (
+        SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
+               ${BOUNDED_INNER_TEXT},
+               COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
+               snippet(events_fts, 0, @open, @close, '…', 14) AS snip,
+               snippet(events_fts, 0, '', '', '…', 14) AS snipPlain,
+               snippet(events_fts, 1, @open, @close, '…', 14) AS snipCmd${BOUNDED_INNER_EXTRA},
+               rank AS score
+        FROM events e JOIN events_fts ON e.rowid = events_fts.rowid
+        WHERE ${where.join(' AND ')}
+      )
+      ORDER BY ts ${dir}, id COLLATE BINARY ${dir}
+      LIMIT @limit`
+      : `
       SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
              e.cmd, e.text,
              COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
@@ -237,14 +261,16 @@ export function searchChrono (view, query) {
       WHERE ${where.join(' AND ')}
       ORDER BY e.ts ${dir}, e.id COLLATE BINARY ${dir}
       LIMIT @limit`
-    return db.prepare(sql).all({ match, limit, open, close, ...filterParams })
+    const params = { match, limit, open, close, ...filterParams }
+    if (boundedText) params.snipChars = MAX_BOUNDED_EXCERPT_CHARS
+    return db.prepare(sql).all(params)
   } finally {
     if (own) db.close()
   }
 }
 
 /**
- * browseChrono(view, { sort: 'oldest'|'newest', ...filtres, limit })
+ * browseChrono(view, { sort: 'oldest'|'newest', ...filtres, limit, boundedText })
  * → événements SANS mots-clés : aucun `MATCH` FTS, donc aucune requête `'*'`
  * inventée. Le sous-ensemble CANONIQUE est TOUJOURS l'intersection
  * `role ∈ {user, assistant}` ∩ filtre `--role` éventuel : `--role title` ou une
@@ -253,6 +279,10 @@ export function searchChrono (view, query) {
  * mode FTS). `score` vaut `null` (BM25 non calculé) ; la métadonnée de modèle
  * absente reste `null`, jamais inventée. Filtres et tri `(ts, id BINARY)`
  * identiques à `searchChrono`.
+ * `boundedText` (opt-in, défaut `false`, CLI compatible) : pas de `snippet()` FTS,
+ * l'extrait est un `substr` BORNÉ de `text`/`cmd` (colonnes complètes NON chargées),
+ * avec longueurs réelles et indicateurs de coupure exacts (`snipFull`/`snipCmdFull`)
+ * au même format que les projections bornées de `search()`.
  */
 export function browseChrono (view, query) {
   const own = typeof view === 'string'
@@ -262,7 +292,26 @@ export function browseChrono (view, query) {
     const dir = query.sort === 'newest' ? 'DESC' : 'ASC'
     const { clauses, params } = filterSql(query)
     const where = ["e.role IN ('user','assistant')", ...clauses]
-    const sql = `
+    const boundedText = query.boundedText === true
+    const sql = boundedText
+      ? `
+      SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
+             length(e.text) AS textLen, length(e.cmd) AS cmdLen,
+             COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
+             substr(COALESCE(e.text, ''), 1, @snipChars) AS snip,
+             substr(COALESCE(e.text, ''), 1, @snipChars) AS snipPlain,
+             length(e.text) AS snipPlainLen,
+             CASE WHEN e.text IS NULL OR length(e.text) <= @snipChars THEN 1 ELSE 0 END AS snipFull,
+             substr(COALESCE(e.cmd, ''), 1, @snipChars) AS snipCmd,
+             substr(COALESCE(e.cmd, ''), 1, @snipChars) AS snipCmdPlain,
+             length(e.cmd) AS snipCmdPlainLen,
+             CASE WHEN e.cmd IS NULL OR length(e.cmd) <= @snipChars THEN 1 ELSE 0 END AS snipCmdFull,
+             NULL AS score
+      FROM events e
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.ts ${dir}, e.id COLLATE BINARY ${dir}
+      LIMIT @limit`
+      : `
       SELECT e.id, e.session_id, e.ts, e.role, e.agent, e.repo, e.model,
              e.cmd, e.text,
              COALESCE(json_extract(e.json, '$.source'), 'opencode') AS source,
@@ -271,7 +320,7 @@ export function browseChrono (view, query) {
       WHERE ${where.join(' AND ')}
       ORDER BY e.ts ${dir}, e.id COLLATE BINARY ${dir}
       LIMIT @limit`
-    return db.prepare(sql).all({ limit, ...params })
+    return db.prepare(sql).all(boundedText ? { limit, snipChars: MAX_BOUNDED_EXCERPT_CHARS, ...params } : { limit, ...params })
   } finally {
     if (own) db.close()
   }

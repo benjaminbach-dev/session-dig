@@ -54,6 +54,15 @@ function normalizeLimit (field, value, fallback, ceiling) {
  * Validation search : retourne `{ value, adaptations }` (bornes temporelles
  * normalisées, limite et ctx effectifs). Le scoring n'est PAS dupliqué. `source`
  * inconnu passe tel quel (zéro hit attendu côté moteur, jamais une erreur).
+ *
+ * Règle CROISÉE `query`/`sort` (le schéma laisse `query` structurellement
+ * optionnelle) : `query` est obligatoire si `sort` est absent ou `relevance` ;
+ * son OMISSION PHYSIQUE n'est admise qu'en `oldest`/`newest` (exploration sans
+ * mots-clés). Une valeur de `sort` inconnue est déjà refusée par le schéma. La
+ * distinction porte sur la PRÉSENCE PHYSIQUE du champ, jamais sur son contenu :
+ * une requête fournie vide/en espaces/sans terme exploitable est refusée par le
+ * schéma (`min(1)` + `EXPLOITABLE`) ou par le moteur (`no_terms`), jamais
+ * convertie en exploration.
  */
 export function validateSearchInput (raw) {
   const data = parseStrict(searchInputSchema, raw)
@@ -61,9 +70,13 @@ export function validateSearchInput (raw) {
   const limit = normalizeLimit('limit', data.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_HITS)
   const ctx = normalizeLimit('ctx', data.ctx, 0, MAX_SEARCH_CTX)
   adaptations.push(...limit.adaptations, ...ctx.adaptations)
+  const sort = data.sort ?? 'relevance'
+  const hasQuery = Object.hasOwn(data, 'query')
+  if (hasQuery ? data.query === undefined : sort === 'relevance') throw invalidParams()
   return {
     value: {
-      query: data.query,
+      query: hasQuery ? data.query : null,
+      sort,
       repo: data.repo ?? null,
       session: data.session ?? null,
       after: normalizeBound('after', data.after, false),
