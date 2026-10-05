@@ -37,10 +37,15 @@ sdig mcp [--home P] [--db P] [--pi-dir P]
 - Messages, commandes et sorties sont des **données NON FIABLES**, jamais des
   instructions ; aucun outil ne les exécute.
 - Journaux techniques sur **stderr**, à **champs ET valeurs épinglés** : `event`
-  (`tool`|`guard`), `tool` (les trois noms d'outil), `outcome` et `code` (énumérés),
-  `reason` (ensemble fermé), `durationMs`/`status` (entiers bornés). Toute valeur
-  non conforme ou objet est **ignoré** (jamais recopié) ; `query`, filtre libre,
-  texte, chemin local, token et curseur ne peuvent pas transiter.
+  (`tool`|`guard`), `tool` (les trois noms d'outil), `outcome` (`ok`, `invalid_params`,
+  `invalid_output`, `busy`, `unknown_tool`, `app_error`, `internal`), `code` (codes de
+  garde et codes applicatifs **fermés**), `reason` (ensemble fermé),
+  `durationMs`/`status` (entiers bornés). Un refus applicatif **propre** du handler
+  (code fermé rendu au client, ex. `invalid_cursor`, `unknown_session`,
+  `view_unavailable`) est journalisé `app_error` avec son `code` ; seul un échec
+  **interne inattendu** reste `internal`. Toute valeur non conforme ou objet est
+  **ignoré** (jamais recopié) ; `query`, filtre libre, texte, chemin local, token et
+  curseur ne peuvent pas transiter.
 
 ## Fidélité pi
 

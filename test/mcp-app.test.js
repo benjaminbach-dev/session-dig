@@ -124,17 +124,21 @@ test('journal sûr : champs ET valeurs épinglés (objet/chaîne détourné igno
   log({ event: 'tool', tool: { query: 'SECRET-OBJ' }, outcome: 'ok', reason: 'SECRET-STR', durationMs: 3 })
   log({ event: 'guard', code: 'forbidden_host', status: 403 })
   log({ event: 'tool', tool: 'sdig_read', outcome: 'invalid_params', reason: 'invalid_config', durationMs: 5 })
+  log({ event: 'tool', tool: 'sdig_read', outcome: 'app_error', code: 'unknown_session', reason: 'SECRET-STR', durationMs: 7 })
+  log({ event: 'tool', tool: 'sdig_read', outcome: 'SECRET-OUTCOME', code: 'SECRET-CODE', durationMs: 2 })
   log(null)
   log('SECRET-RAW')
   const joined = lines.join('\n')
-  for (const bad of ['SECRET-QUERY', 'SECRET-TEXT', '/secret/path', 'SECRET-TOKEN', 'SECRET-CURSOR', 'SECRET-OBJ', 'SECRET-STR', 'SECRET-RAW']) {
+  for (const bad of ['SECRET-QUERY', 'SECRET-TEXT', '/secret/path', 'SECRET-TOKEN', 'SECRET-CURSOR', 'SECRET-OBJ', 'SECRET-STR', 'SECRET-RAW', 'SECRET-OUTCOME', 'SECRET-CODE']) {
     assert.ok(!joined.includes(bad), `fuite ${bad}`)
   }
   assert.deepEqual(JSON.parse(lines[0]), { event: 'tool', tool: 'sdig_search', outcome: 'ok', durationMs: 3 })
   assert.deepEqual(JSON.parse(lines[1]), { event: 'tool', outcome: 'ok', durationMs: 3 }, 'tool objet + reason inconnu ignorés')
   assert.deepEqual(JSON.parse(lines[2]), { event: 'guard', code: 'forbidden_host', status: 403 })
   assert.deepEqual(JSON.parse(lines[3]), { event: 'tool', tool: 'sdig_read', outcome: 'invalid_params', reason: 'invalid_config', durationMs: 5 })
-  assert.equal(lines.length, 4, 'entrées non conformes ignorées')
+  assert.deepEqual(JSON.parse(lines[4]), { event: 'tool', tool: 'sdig_read', outcome: 'app_error', code: 'unknown_session', durationMs: 7 }, 'outcome app_error + code fermé conservés, raison détournée ignorée')
+  assert.deepEqual(JSON.parse(lines[5]), { event: 'tool', tool: 'sdig_read', durationMs: 2 }, 'outcome/code inconnus ignorés')
+  assert.equal(lines.length, 6, 'entrées non conformes ignorées')
 })
 
 test('installAppShutdown : close→dispose→exit(0) ; échec ⇒ exit(1) + diagnostic FIXE', async () => {

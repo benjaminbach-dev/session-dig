@@ -13,6 +13,7 @@ import {
   RESPONSE_BUDGET_BYTES,
   MAX_BODY_BYTES,
   APP_ERROR_MESSAGES,
+  McpAppError,
   checkBearer,
   constantTimeEqual,
   parseHostHeader,
@@ -391,6 +392,36 @@ test('sortie non conforme au schéma => erreur internal bornée', async () => {
       assert.equal(r.structuredContent, undefined)
     } finally { await client.close() }
   })
+})
+
+test('journal : refus applicatif du handler => outcome app_error + code fermé ; échec inattendu => internal', async () => {
+  const logs = []
+  const handlers = {
+    sdig_search: async () => { throw new McpAppError('unknown_session') },
+    sdig_read: async () => { throw new Error('SECRET-BOOM') },
+    sdig_status: async () => { throw new McpAppError('view_unavailable', 'stale_view') }
+  }
+  await withServer(handlers, async (srv) => {
+    const client = await connectClient(srv)
+    try {
+      const r1 = await client.callTool({ name: 'sdig_search', arguments: { query: 'ok' } })
+      assert.equal(JSON.parse(r1.content[0].text).code, 'unknown_session')
+      const r2 = await client.callTool({ name: 'sdig_read', arguments: { session: 's' } })
+      assert.equal(JSON.parse(r2.content[0].text).code, 'internal')
+      const r3 = await client.callTool({ name: 'sdig_status', arguments: {} })
+      assert.equal(JSON.parse(r3.content[0].text).code, 'view_unavailable')
+    } finally { await client.close() }
+  }, { logger: (e) => logs.push(e) })
+  assert.ok(!JSON.stringify(logs).includes('SECRET-BOOM'))
+  const sansRaison = logs.find((e) => e.code === 'unknown_session')
+  assert.ok(sansRaison, 'refus applicatif journalisé')
+  assert.deepEqual({ ...sansRaison, durationMs: 0 }, { event: 'tool', tool: 'sdig_search', outcome: 'app_error', code: 'unknown_session', durationMs: 0 })
+  const avecRaison = logs.find((e) => e.code === 'view_unavailable')
+  assert.ok(avecRaison, 'refus avec raison fermée journalisé')
+  assert.deepEqual({ ...avecRaison, durationMs: 0 }, { event: 'tool', tool: 'sdig_status', outcome: 'app_error', code: 'view_unavailable', reason: 'stale_view', durationMs: 0 })
+  const interne = logs.find((e) => e.tool === 'sdig_read')
+  assert.deepEqual({ ...interne, durationMs: 0 }, { event: 'tool', tool: 'sdig_read', outcome: 'internal', durationMs: 0 })
+  assert.equal(logs.filter((e) => e.outcome === 'internal').length, 1, 'seul l’échec inattendu reste internal')
 })
 
 test('budget d’enveloppe : medium (champ additif) sous 524288, content:[] ; huge => internal', async () => {

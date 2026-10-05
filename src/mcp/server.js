@@ -195,8 +195,16 @@ function createCore ({ handlers, token, logger, dispose, bindHost, bindPort }) {
         try {
           output = await safeHandlers[name](validated.value, validated.adaptations)
         } catch (err) {
-          log({ event: 'tool', tool: name, outcome: 'internal', durationMs: Date.now() - startedAt })
-          return toToolErrorResult(isMcpAppError(err) ? err : new McpAppError('internal'))
+          // Refus applicatif propre (code fermé porté par le client) distingué d'une
+          // erreur interne inattendue : même journal borné, classement fidèle.
+          const appError = isMcpAppError(err)
+          const event = { event: 'tool', tool: name, outcome: appError ? 'app_error' : 'internal', durationMs: Date.now() - startedAt }
+          if (appError) {
+            event.code = err.code
+            if (err.reason != null) event.reason = err.reason
+          }
+          log(event)
+          return toToolErrorResult(appError ? err : new McpAppError('internal'))
         }
         const result = buildToolResult(name, output, extra?.requestId)
         log({ event: 'tool', tool: name, outcome: result.isError ? 'invalid_output' : 'ok', durationMs: Date.now() - startedAt })

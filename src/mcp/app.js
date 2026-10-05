@@ -12,7 +12,7 @@ import { createMcpServer } from './server.js'
 import { createSearchHandler } from './search.js'
 import { createReadHandler } from './read.js'
 import { createStatusHandler } from './status.js'
-import { APP_ERROR_REASONS } from './errors.js'
+import { APP_ERROR_CODES, APP_ERROR_REASONS } from './errors.js'
 import { corpusRoot, sourceDb, sourcePi } from '../paths.js'
 
 // ── Journal technique : VALEURS ÉNUMÉRÉES ÉPINGLÉES ─────────────────────────
@@ -22,8 +22,10 @@ import { corpusRoot, sourceDb, sourcePi } from '../paths.js'
 // transiter, même via une valeur détournée.
 const LOG_EVENTS = new Set(['tool', 'guard'])
 const LOG_TOOLS = new Set(['sdig_search', 'sdig_read', 'sdig_status'])
-const LOG_OUTCOMES = new Set(['ok', 'invalid_params', 'invalid_output', 'busy', 'unknown_tool', 'internal'])
-const LOG_CODES = new Set(['forbidden_host', 'unauthorized', 'busy', 'not_found', 'method_not_allowed', 'internal'])
+// `app_error` : refus applicatif PROPRE du handler (code fermé, ex. `invalid_cursor`,
+// `unknown_session`, `view_unavailable`) — distinct d'un échec interne inattendu.
+const LOG_OUTCOMES = new Set(['ok', 'invalid_params', 'invalid_output', 'busy', 'unknown_tool', 'app_error', 'internal'])
+const LOG_CODES = new Set(['forbidden_host', 'unauthorized', 'busy', 'not_found', 'method_not_allowed', 'internal', ...APP_ERROR_CODES])
 const LOG_REASONS = new Set([...APP_ERROR_REASONS.view_unavailable, ...APP_ERROR_REASONS.internal])
 
 /** Journal technique stderr par défaut, champs ET valeurs épinglés (aucune fuite). */
