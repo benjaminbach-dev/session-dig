@@ -257,9 +257,15 @@ test('budget arrêté AVANT un message (offset 0) : la continuation NE SAUTE PAS
 test('frontière 1 point : fragment réduit à 1 point émis (pas budget_exhausted)', () => {
   const handler = newHandler()
   const vp = path.join(root, 'index.db')
+  // Gel du mtime : l'enveloppe mesurée contient `freshness.indexMtime` (float), dont
+  // la longueur JSON varie avec les fractions de seconde ; un mtime entier fixe rend
+  // la frontière de budget déterministe. Pur diagnostic : la fraîcheur se juge sur le
+  // watermark, pas sur le mtime ⇒ pas de `stale_view`.
+  const mtimeFige = new Date(Math.floor(Date.now() / 1000) * 1000)
   const setTitle = (n) => {
     const db = new Database(vp)
     try { db.prepare("UPDATE sessions SET title = ?, json = json_set(json, '$.title', ?) WHERE id = ?").run('T'.repeat(n), 'T'.repeat(n), 'ses_tight') } finally { db.close() }
+    fs.utimesSync(vp, mtimeFige, mtimeFige)
   }
   const probe = (n) => {
     setTitle(n)
