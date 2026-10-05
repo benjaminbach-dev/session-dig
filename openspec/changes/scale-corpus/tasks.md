@@ -43,10 +43,12 @@ Ce lot est le prochain lot d'implémentation ciblé, pas un nouveau change ni un
 ### Lot B — validation CLI PC puis façade MCP
 
 > **02/10/2026 — validation PARTIELLE sur PC :** ingestion initiale Pi et OpenCode réussie sur deux archives dédiées, usages CLI exercés ; delta, passe sans changement, rebuild réel, RSS/plan SQL et client MCP restent NON validés. Défaut MCP de lecture complète reproduit, non corrigé. [Bilan et limites](validation-pc-2026-10-02.md). Les cases composites restent ouvertes.
+>
+> **05/10/2026 — suite de la validation PC :** dépendances installées, suite complète 535/535 après correctif d'un test flaky, première ingestion dans le home par défaut (39,2 s, ~2,34 Gio RSS, 909 Mo, 2 368 sessions / 89 449 événements, delta 0,32 s), client MCP réel validé sur corpus réel avec recollement par hash et intégrité vérifiée. [Bilan et limites](validation-pc-2026-10-05.md). Rebuild réel, mesures cache froid et banc étendu restent ouverts.
 
-- [ ] Vérifier ingestion initiale, delta, passe sans changement et reconstruction de la vue depuis le corpus sur le volume PC réellement observé (sauvegarde ou corpus de validation distinct).
-- [ ] Mesurer volume, durées, mémoire et disque avec conditions/limites de mesure ; corriger les blocages sur les chemins utilisés, sans nouveaux quotas préventifs arbitraires.
-- [ ] Valider le MVP et un client réel selon `add-mcp-server/tasks.md` : search/read/status, lecture longue complète, provenance, ancrage, erreurs de fraîcheur et confidentialité. Cas mixtes sur sources présentes, sinon fixtures ; erreurs fabriquées sur copie jetable.
+- [ ] Vérifier ingestion initiale, delta, passe sans changement et reconstruction de la vue depuis le corpus sur le volume PC réellement observé (sauvegarde ou corpus de validation distinct). **Partiel au 05/10** : initiale, delta et passe quasi-sans-changement faites sur le home par défaut ([bilan](validation-pc-2026-10-05.md)) ; **reconstruction (`--rebuild`) non exécutée** — case ouverte.
+- [ ] Mesurer volume, durées, mémoire et disque avec conditions/limites de mesure ; corriger les blocages sur les chemins utilisés, sans nouveaux quotas préventifs arbitraires. **Partiel au 05/10** : volume/durée/RSS de l'ingestion initiale et durées MCP consignées (bilan ci-dessus) ; cache froid, plan SQL et banc étendu restent à mesurer.
+- [x] Valider le MVP et un client réel selon `add-mcp-server/tasks.md` : search/read/status, lecture longue complète, provenance, ancrage, erreurs de fraîcheur et confidentialité. Cas mixtes sur sources présentes, sinon fixtures ; erreurs fabriquées sur copie jetable. **Fait le 05/10/2026** ([bilan PC](validation-pc-2026-10-05.md)) : sources réelles présentes (pi + opencode), catalogue/search/read/status/reconnexion/redémarrage, recollement par hash, codes d'erreur fermés sans fuite, intégrité du corpus inchangée.
 
 ### Lot C — selon les observations et sur accord
 
@@ -72,5 +74,5 @@ L'archivage reste distinct : valider ou reporter explicitement chaque exigence r
 - [x] Verrou : refus de reprise d'un propriétaire vivant sur l'âge seul ; la reprise sur ESRCH (lire le PID puis retirer, non atomique) a été retirée au lot A1 — refus conservateur de tout verrou ambigu, retrait manuel seulement après arrêt coordonné de tous les utilisateurs du corpus. **SOLDÉ le 01/10/2026** : le wx/PID puis le protocole « répertoire » (réfuté R1/R2) sont remplacés par un verrou noyau `better-sqlite3` (`locking_mode=EXCLUSIVE`), fichier jamais supprimé, trace commitée pour le refus conservateur.
 - [x] Arrêt anticipé streamLines sans double fermeture.
 - [x] Validation légère : 51/51 (commande dans progress.md), aucun corpus réel modifié.
-- [ ] Bilan du lot B consigné sans données privées : voir critères J-MCP ci-dessus et proposition. Le jeu naturel gelé n'est jamais relancé sans demande explicite.
+- [ ] Bilan du lot B consigné sans données privées : voir critères J-MCP ci-dessus et proposition. Le jeu naturel gelé n'est jamais relancé sans demande explicite. **Partiel au 05/10** : [bilan PC du 05/10](validation-pc-2026-10-05.md) consigné (ingestion, client MCP) ; rebuild et mesures restantes manquent pour clore le lot.
 - [ ] Décision de clôture distincte de J-MCP : exigences vérifiées ou reports documentés, limites conservées, ordre d'archivage pi/scale résolu. Aucun archivage ni commit/push implicite.

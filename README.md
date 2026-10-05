@@ -255,8 +255,11 @@ Guide complet : [docs/mcp.md](docs/mcp.md).
   hors annexes WAL, arrêt/redémarrage, `stale_cursor`, SIGTERM enfant, CLI `--help`
   et arguments invalides sans écho). Les serveurs de test sont **éphémères** : le
   port **18767 n'est jamais lié** pendant les tests.
-- **Non fait** : validation PC, client MCP réel sur PC, jalon **J-MCP**, archive
-  privée, éval gelée. La validation locale porte sur **fixtures synthétiques**.
+- **Non fait** : jalon **J-MCP**, archive
+  privée, éval gelée (décision de clôture du principal ; lot B de scale-corpus
+  restant : rebuild réel, mesures). La validation PC a eu lieu le 05/10/2026 :
+  client MCP réel sur corpus réel, recollement par hash, intégrité vérifiée —
+  [bilan](openspec/changes/scale-corpus/validation-pc-2026-10-05.md).
 
 ## Roadmap
 

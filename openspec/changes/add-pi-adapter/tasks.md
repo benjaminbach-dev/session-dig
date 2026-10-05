@@ -30,7 +30,7 @@ Les validations cochées ci-dessous restent historiques ; elles ne couvrent pas 
 
 - [x] Rendre le signal général de limites pi dans recherche (hit/voisin/titre pi) et lecture d'une session pi connue, même vide à l'ancre : branches aplaties et `context_edit` non appliqué ; terminal visible, JSON structuré valide sans texte parasite, association à la seule source pi. Aucune lecture de source ni changement du corpus/index requis.
 - [x] Fixtures synthétiques : recherche mixte, titre pi seul, lecture pi avec/sans ancre et vide, recherche opencode-only/sans résultat et session inconnue ; assertions sur présence/absence du signal, comptes et contenu inchangés. Le signal ne prétend pas détecter les branches/éditions d'une session.
-- [ ] Vérifier la reprise du contrat dans le MVP MCP (`add-mcp-server`) ; pas d'implémentation MCP implicite, pas de rejeu du jeu naturel gelé.
+- [x] Vérifier la reprise du contrat dans le MVP MCP (`add-mcp-server`) ; pas d'implémentation MCP implicite, pas de rejeu du jeu naturel gelé. **Vérifié le 05/10/2026** (lecture croisée read-only, principal + scout) : fidélité pi (signal `fidelity` racine read / par provenance search, valeurs verrouillées par schéma), provenance `source`/préfixe pi, `agent: null`, `model` aux valeurs exactes du format commun (`null` si absent), sessions pi vides reconnues (réponse non-erreur), divergence jeton ⇒ `view_unavailable`, fraîcheur reprise de `checkFresh` sans duplication — tout passe par les modules partagés (`src/format.js`, `src/view.js`, `src/read.js`). Nuance : aucun test MCP dédié n'asservit `model: null` en lecture pi (garantie établie par code + schéma `readMessageSchema`).
 
 ## Validation de l'implémentation
 
