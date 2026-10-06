@@ -53,7 +53,9 @@ sdig fingerprint     # empreinte déterministe du corpus (intégrité / détecti
 sdig status          # état corpus / vue
 npm test             # suite complète à relancer après la passe corrective (ne remplace pas le banc)
 npm run eval         # historique : 28/28 figé, 24/28 vivant ; non relancé dans cette passe
-node scripts/bench.js --n 20000   # banc à corriger avant toute nouvelle conclusion de performance
+node scripts/bench.js --n 20000 --sessions 100 --runs 10 --raw-mib 8
+                     # banc synthétique fidèle (rendu réel, snapshot, preuve géante,
+                     # pic RSS OS) — hors npm test ; smoke : test/bench-smoke.test.js
 ```
 
 Corpus local par défaut : `~/.local/share/session-dig/` (surchargeable `--home` ou `SESSION_DIG_HOME`). Sources en lecture seule : base opencode `~/.local/share/opencode/opencode.db` (`--db` / `SESSION_DIG_DB` — **propre à opencode**, jamais appliquée à pi) ; répertoire des sessions pi `~/.pi/agent/sessions` (`--pi-dir` / `SESSION_DIG_PI_DIR`). `sdig status` affiche le watermark par source (opencode : epoch ; pi : fichiers suivis + jeton) et signale les absences. **Changement d'usage v0.6** : `sdig read` dépend de la vue (`index.db`) — refus explicite si absente ou périmée, réparer avec `sdig refresh`.
