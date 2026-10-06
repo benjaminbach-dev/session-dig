@@ -238,6 +238,36 @@ Suite complète, évaluation, bancs 100k/500k/1000× et campagne de crash/concur
 
 ## Reprise opérationnelle
 
-**Dernier bilan : [validation PC partielle du 02/10/2026](validation-pc-2026-10-02.md).** Imports réels Pi et OpenCode et recherches CLI exercés sur archives dédiées ; lot B encore incomplet, défaut MCP sur commandes volumineuses reproduit et NON corrigé, client MCP réel NON testé. Le besoin de tri chronologique CLI est consigné, pas spécifié ni implémenté. Ce bilan ne clôt aucun change et ne remplace pas les preuves historiques.
+**État actuel — 06/10/2026, code `6f55adf`.** L'utilisateur a autorisé les travaux automatisables via worker, la revue/correction principale, les avis Advisor aux étapes majeures/risquées et les commits/push. Quatre lots sont livrés sur `origin/main` :
 
-Lire d'abord la **validation A1 PRoot du 01/10/2026** (section dédiée) et `git status` avant toute modification. Le bilan « Validation PC du 01/10/2026 » est **historique** (`6af37c7`, A1 alors partiel) : ne pas le réécrire. A1 est **soldé** par verrou noyau `better-sqlite3` (refus conservateur ; frontières d'arrêt brutal explicitées) ; A2–A4 restent validés sur fixtures. Des validations CLI réelles partielles ont été autorisées et réalisées le 02/10/2026 (bilan lié ci-dessus). Leurs compléments et le MVP MCP restent soumis à un nouvel accord. Les données privées restent hors Git. Aucun commit/push, démarrage ou archivage implicite.
+| Commit | Lot | Preuves dédiées |
+|---|---|---|
+| `1719c0a` | Lecture CLI en flux, snapshot pendant consommation et backpressure | 39 tests read-stream, parité octet terminal/JSON, erreurs/cleanup/snapshot |
+| `01ecd79` | Banc fidèle : vrais rendus, preuve géante, pic RSS OS, phases Pi et plans SQL exacts | 4 tests smoke, mesures 20k/100k/500k, revue principale et Advisor |
+| `5ea5b3a` | Outils naturels sur vue v2, provenance et curation vérifiées | 14 tests synthétiques ; aucun jeu privé lu ou régénéré |
+| `6f55adf` | Ouverture opencode RO sans copie de repli, détection d'index de session par PRAGMA | 15 tests source, WAL vivant db/wal inchangés, erreurs et pagination |
+
+**Validation finale principale**, après tous les correctifs :
+
+```sh
+env -u NODE_OPTIONS npm test
+# 645/645, 0 échec, 0 ignoré, ~31,6 s
+OPENSPEC_TELEMETRY=0 DO_NOT_TRACK=1 openspec validate --specs --changes --strict --no-interactive
+# 8/8
+git diff --check
+# propre
+```
+
+Avis Advisor : aucun bloquant après corrections. Aucune installation, modification de configuration/MCP, source personnelle ou service de production dans cette passe ; tests et banc sur fixtures temporaires uniquement. Les suites vertes ne remplacent ni une passation naturelle, ni une nouvelle validation du corpus réel.
+
+**Mesures actuelles** : [banc corrigé du 06/10](validation-pc-2026-10-06.md), **468 Mio** de pic RSS cumulatif et **536 ms p95** de recherche rendue à 500k (cible 100 ms **non atteinte**). Fichier Pi changé jusqu'à 11,1 Mio, delta sur session monstre et inventaires explicités sur fixtures ; plans synthétiques complets, pas de promesse d'O(delta) pour les messages. Cache non contrôlé, méthodes historiques non directement comparables.
+
+**Restes explicitement ouverts** :
+
+- Plans SQL et coûts sur les sources personnelles à confirmer séparément ; pas d'observation nouvelle de ces sources. Mesures cache froid nécessitant une action système non effectuées.
+- Arbitrage des cibles/optimisations de performance (lot C) ; aucun changement du scoring.
+- Écart des dorées sur corpus vivant, curation et passation du jeu naturel gelé : aucune modification automatique des attendus. Banc hermétique MCP complet après évolution chrono non rejoué (outils sdig non exposés dans cette session), aucune nouvelle note revendiquée ; anomalie FTS historique non expliquée, réserve D7 Pi conservée.
+- Décisions de clôture/archivage et ordre des deltas : **aucun change clos/archivé, aucun J-MCP plein déclaré**.
+- Extensions conditionnelles (pagination search, raw MCP, timeout/concurrence, supervision, embeddings/stats) : non implémentées sans besoin/périmètre spécifié ; ne sont pas des prérequis implicites du jalon.
+
+Le [bilan réel du 05/10](validation-pc-2026-10-05.md) et la [validation MCP chrono](../add-mcp-chrono/validation-pc-2026-10-05.md) restent les références pour les usages réels déjà vérifiés ; celui du 02/10 est historique, pas le dernier état. A1 est soldé (section PRoot dédiée), A2–A4 restent validés sur fixtures. Les données privées restent hors Git.
