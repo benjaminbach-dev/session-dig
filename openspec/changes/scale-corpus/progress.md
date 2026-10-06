@@ -10,8 +10,22 @@ Arbitrage explicite du principal après diagnostic de phase 1 : les 28 `expect` 
 
 ---
 
-# Reprise — scale-corpus, passe corrective du 20/09/2026 soir
+# Clôture — 06/10/2026
 
+**Change CLOTURÉ sur décision explicite du principal, puis archivé le même jour (commit dédié).** Séquence de clôture du 06/10, chaque étape sur instruction explicite :
+
+1. **Mesures sur sources réelles** ([validation-pc-2026-10-06-sources.md](validation-pc-2026-10-06-sources.md)) : plan SQL de la base opencode réelle consigné (aucun index `time_updated` sur `session` → repli par clé, messages en **scan** — O(#messages), pas O(delta)) ; delta pi réel mesuré (9,5 s dont ~8,7 s de reconstruction de vue, ~0,6 ms/évt marginal). Cases 18 et 23 soldées.
+2. **Re-curation des dorées** : drift de données majeur constaté — **38/38 sessions dorées disparues de la source opencode** entre le 19/09 et le 05/10 (cause données, pas code). 10 requêtes re-pointées vers des équivalents vérifiés (7 top-1 vertes, 3 écarts de rang documentés en `knownMiss`), 18 conservées comme témoins du drift ; `npm run eval` **exit 0** (top1 7/28, 21 écarts documentés). Aucun re-scoring.
+3. **Banc hermétique MCP re-joué après chrono : 10/10** (résultats privés hors Git, `eval/hermetic/results-2026-10-06.md`) — Q2 structurelle résolue par l'exploration + filtre modèle + tri oldest ; honnêteté préservée (Q10, artefact auto-référentiel identifié). **J-MCP déclaré** (détail dans `add-mcp-server`).
+4. **Anomalie FTS « historique » expliquée, aucun défaut moteur** : artefact d'opérateur (`sdig search openspec` = requête OR « search openspec » ; le token « search » matche les faux positifs). Forme canonique `sdig <requête>` : vrais hits.
+5. **Arbitrage perf (lot C) : performance ACTUELLE ACCEPTÉE** — corpus réel p95 CLI 136,3 ms / MCP 65,6 ms ; écart synthétique 536 ms @ 500k assumé et documenté, aucune optimisation planifiée, scoring inchangé.
+6. **Clôture et ordre d'archivage résolus et exécutés** : `add-pi-adapter` → `add-cli-chronological-sort` → `add-mcp-server` → `add-mcp-chrono` → `scale-corpus`.
+
+Limites conservées et assumées à la clôture : cache froid non mesuré (action système), A2–A4 validés sur fixtures, pas de promesse O(delta) messages (plan réel : scan), couverture dorée réduite (7 requêtes actives — une re-curation fraîche via `natural-eval` restaure la couverture), contamination auto-référentielle du banc (renouveler les mots-tests au prochain passage).
+
+---
+
+# Reprise — scale-corpus, passe corrective du 20/09/2026 soir
 **Change NON terminé, NON archivé.** Cette fiche remplace les anciens bilans « tout coché ». Les specs décrivent la cible ; les cases rouvertes dans tasks.md sont des écarts restant à traiter. Pas de démarrage du MCP implicite. **Rescopage à la demande explicite de l'utilisateur** : jalon « usage solo local validé sur PC » en trois lots (A intégrité/prérequis, B MCP minimal + validation PC, C optimisations conditionnées aux mesures) — voir proposition ; le premier usage MCP n'attend pas la clôture complète de scale-corpus ; intégrité/reprise et exclusion d'écrivains restent bloquantes avant usage sur corpus réel. Prototypage sur fixtures permis avant le jalon. Cet encadré ne transforme pas les validations historiques ci-dessous en validations nouvelles.
 
 ## Sources personnelles réelles — 06/10/2026 : plan SQL et delta pi mesurés
