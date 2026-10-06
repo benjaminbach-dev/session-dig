@@ -34,8 +34,30 @@ node scripts/natural-extract.mjs --n 110 --cap 30 --seed 20260918   # tirage dé
 node scripts/natural-build.mjs                                      # vérifie contre le corpus et écrit le jeu
 ```
 
-`natural-build.mjs` échoue bruyamment si une question citée n'existe plus dans le corpus
-ou si la curation est incomplète : un jeu partiel ne doit jamais passer inaperçu.
+Options : `--out DOSSIER` (défaut `eval/natural`) et `--home RACINE` (racine du corpus ;
+par défaut `SESSION_DIG_HOME`/`~/.local/share/session-dig`) sur les **deux** scripts —
+indispensables aux tests sous répertoire temporaire.
+
+**Lecture par la vue v2** : extraction et construction lisent le corpus via la vue
+dérivable (`openView` + `inReadTx`, un seul snapshot), jamais les fichiers v1
+`events.jsonl`/`sessions.jsonl`. Une vue absente, périmée ou de layout non supporté
+est **refusée explicitement** (aucun repli silencieux, aucune sortie écrite) — la
+source sur disque peut être absente, l'archive reste lisible tant que la vue est à jour.
+Les événements sont parcourus par session, en flux, dans l'ordre canonique explicite
+`(ts, id)` ; l'échantillon reste **déterministe** à graine et corpus égaux.
+
+`natural-build.mjs` échoue bruyamment — **avant toute écriture**, donc jamais de jeu partiel —
+si :
+
+- la session citée n'existe pas dans la vue, ou le `userMsgId` n'appartient pas à cette
+  session ou n'est pas de rôle `user` ;
+- la question **originale du tirage** ne correspond pas **exactement** (après nettoyage des
+  artefacts client) au texte du message corpus — une queue inventée après un préfixe
+  identique est refusée ; la réécriture historique `c.q` reste permise tant que son préfixe
+  est celui de l'originale ;
+- la curation est incomplète : `expect` doit porter **au moins 2 faits** non vides, `type`
+  ∈ `fait|etat|decision|conseil|veille`, `specificity` ∈ `high|medium|low`, `selfContained`
+  booléen ; un item aux métadonnées `undefined` n'est jamais construit.
 
 ## Passer le test à un agent
 
