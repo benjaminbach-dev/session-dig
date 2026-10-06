@@ -317,77 +317,180 @@ export function renderChrono (hits, sessionsById, opts = {}) {
 }
 
 /**
- * Lecture d'une session (sdig read) : fenêtres avec index positionnels.
- * Change add-read-at : deux marqueurs distincts, jamais confondus —
- *   - « ancre : … » en tête quand la lecture est bornée dans le temps ;
- *   - « … N message(s) … masqué(s) » en fin de vue (masquage temporel) ;
- *   - le marqueur de troncature reste par message (coupure d'affichage).
+ * Éléments de TÊTE de la lecture (titre, ancre, erreur/avertissement, fidélité pi).
+ * PARTAGÉS entre le rendu tableau (`renderRead`) et le rendu EN FLUX
+ * (`readTerminalChunks`) — mêmes octets par construction.
  */
-export function renderRead (slice, sessionId, opts = {}) {
-  const { full = false, chars = null, plain = false } = opts
-  const { ses, events: evs, spans, error, anchor = null, maskedCount = 0 } = slice
-  const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
+function readHeadLines (slice, sessionId, opts, last, total) {
+  const { plain = false } = opts
+  const { ses, error, anchor = null } = slice
   const dim = plain ? '' : '\x1b[2m'
   const reset = plain ? '' : '\x1b[0m'
-  const L = []
   const title = ses ? `${ses.title || '(sans titre)'} · ${ses.repo || '—'} · ${fmtTs(ses.tsCreated)}` : sessionId
-  L.push(`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${slice.total ?? evs.length} messages${anchor ? ` (${last + 1} visibles)` : ''}\x1b[0m`)
+  const L = [`\x1b[1m── ${title}\x1b[0m  \x1b[2m${sessionId} · ${total} messages${anchor ? ` (${last + 1} visibles)` : ''}\x1b[0m`]
   if (anchor) L.push(`${dim}ancre : ${anchor.id ? `${anchor.id} ` : ''}(${anchor.date}) — lecture bornée à cet instant, ancre incluse${reset}`)
   if (error) L.push(`${dim}${error}${reset}`)
   // complément add-pi-adapter : session pi CONNUE, même vide à l'ancre — le
   // signal reste porté (propriété de l'adaptateur, pas de la branche rendue).
   if (isPiSource(ses)) L.push(piFidelityWarning())
-  for (const [a, b] of spans) {
+  return L
+}
+
+/** Ligne d'un événement (index absolu + marqueur de hit) — PARTAGÉE. */
+function readEventLine (slice, i, e, opts) {
+  const { full = false, chars = null, plain = false } = opts
+  const mark = slice.aroundIdx === i ? '► ' : '  '
+  return `${String(i).padStart(3)} ${renderEvent(e, { mark, full, chars, plain })}`
+}
+
+/** Éléments de QUEUE : masquage temporel (vide si rien à signaler) — PARTAGÉS. */
+function readFootLines (slice, opts) {
+  const { plain = false } = opts
+  const { maskedCount = 0 } = slice
+  if (!(maskedCount > 0)) return []
+  const dim = plain ? '' : '\x1b[2m'
+  const reset = plain ? '' : '\x1b[0m'
+  return [`${dim}… ${maskedCount} message(s) postérieur(s) à l'ancre masqué(s) — relire sans --at pour voir la session entière${reset}`]
+}
+
+/**
+ * Lecture d'une session (sdig read) : fenêtres avec index positionnels.
+ * Change add-read-at : deux marqueurs distincts, jamais confondus —
+ *   - « ancre : … » en tête quand la lecture est bornée dans le temps ;
+ *   - « … N message(s) … masqué(s) » en fin de vue (masquage temporel) ;
+ *   - le marqueur de troncature reste par message (coupure d'affichage).
+ * API TABLEAU inchangée (tests/usages) ; le chemin en flux réutilise les mêmes
+ * helpers (`readHeadLines`/`readEventLine`/`readFootLines`).
+ */
+export function renderRead (slice, sessionId, opts = {}) {
+  const evs = slice.events
+  const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
+  const L = readHeadLines(slice, sessionId, opts, last, slice.total ?? evs.length)
+  for (const [a, b] of slice.spans) {
     if (a > 0) L.push('  ⋯')
     for (let i = a; i <= b; i++) {
       const e = evs[i - a] ?? evs[i] // fenêtres partielles : les events suivent les spans
       if (!e) continue
-      const mark = slice.aroundIdx === i ? '► ' : '  '
-      L.push(`${String(i).padStart(3)} ${renderEvent(e, { mark, full, chars, plain })}`)
+      L.push(readEventLine(slice, i, e, opts))
     }
     if (b < last) L.push('  ⋯')
   }
-  if (maskedCount > 0) {
-    L.push(`${dim}… ${maskedCount} message(s) postérieur(s) à l'ancre masqué(s) — relire sans --at pour voir la session entière${reset}`)
-  }
+  L.push(...readFootLines(slice, opts))
   return L.join('\n')
 }
 
-/** Lecture bornée en JSON (change add-read-at) : ancre résolue + compte masqué + textes intégraux. */
-export function renderReadJson (slice, sessionId) {
-  const { ses, events: evs, spans, anchor = null, maskedCount = 0, error = null } = slice
-  const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
-  const idxs = []
-  for (const [a, b] of spans) for (let i = a; i <= b; i++) idxs.push(i)
-  const evById = new Map(evs.map(e => [e.id, e]))
-  return JSON.stringify({
+/**
+ * Rendu terminal EN FLUX (change scale-corpus) : mêmes éléments que `renderRead`,
+ * mais les événements sont consommés UN À UN depuis un flux asynchrone
+ * (`{ index, event }`, produit par `streamRead`) et chaque élément est émis tel
+ * quel — l'appelant ajoute le saut de ligne. Aucune session matérialisée.
+ * Suppose UN span (garanti par `resolveReadWindowDb` : around/tail/all).
+ */
+export async function * readTerminalChunks (slice, sessionId, opts, events) {
+  const { full = false, chars = null, plain = false } = opts
+  const last = slice.maxIdx == null ? -1 : slice.maxIdx
+  const it = events[Symbol.asyncIterator]()
+  try {
+    for (const l of readHeadLines(slice, sessionId, opts, last, slice.total ?? last + 1)) yield l + '\n'
+    const [a, b] = slice.spans.length ? slice.spans[0] : [0, -1]
+    if (a > 0) yield '  ⋯\n'
+    for await (const { index, event } of { [Symbol.asyncIterator]: () => it }) {
+      yield readEventLine(slice, index, event, { full, chars, plain }) + '\n'
+    }
+    if (slice.spans.length && b < last) yield '  ⋯\n'
+    for (const l of readFootLines(slice, opts)) yield l + '\n'
+  } finally {
+    // Consommateur sorti tôt : referme le flux amont (transaction de lecture comprise).
+    try { await it.return?.() } catch {}
+  }
+}
+
+/** Message JSON d'un événement (forme EXACTE de renderReadJson) — PARTAGÉ. */
+function readJsonMessage (e, i) {
+  return {
+    index: i,
+    id: e.id,
+    ts: e.ts,
+    date: fmtTs(e.ts),
+    role: e.role,
+    agent: e.agent ?? null,
+    model: e.model ?? null,
+    text: e.text ?? null,
+    toolCalls: e.toolCalls ?? []
+  }
+}
+
+/**
+ * Enveloppe JSON SANS les messages (ordre des clés EXACT de renderReadJson).
+ * `error` n'est présent que s'il est renseigné (`?? undefined` historique) ;
+ * `fidelity` n'apparaît que pour la source pi.
+ */
+function readJsonEnvelope (slice, sessionId, last, total) {
+  const { ses, anchor = null, maskedCount = 0, error = null } = slice
+  return {
     sessionId,
     title: ses?.title ?? null,
     repo: ses?.repo ?? null,
     anchor,
     maskedCount,
     visible: Math.max(0, last + 1),
-    total: slice.total ?? evs.length,
-    error: error ?? undefined,
+    total,
+    ...(error != null ? { error } : {}),
     // complément add-pi-adapter : métadonnée structurée ADDITIVE (objet de
     // lecture) ; absente pour toute source non pi.
-    ...(isPiSource(ses) ? { fidelity: piFidelityNotice() } : {}),
-    messages: idxs.map(i => {
-      const e = evById.get(idOfIndex(slice, i)) || evs[idxs.indexOf(i)]
-      if (!e) return null
-      return {
-        index: i,
-        id: e.id,
-        ts: e.ts,
-        date: fmtTs(e.ts),
-        role: e.role,
-        agent: e.agent ?? null,
-        model: e.model ?? null,
-        text: e.text ?? null,
-        toolCalls: e.toolCalls ?? []
-      }
-    }).filter(Boolean)
-  }, null, 2)
+    ...(isPiSource(ses) ? { fidelity: piFidelityNotice() } : {})
+  }
+}
+
+/** Étiquette chaque ligne d'une chaîne déjà indentée (parité JSON.stringify). */
+function indentLines (str, n) {
+  const pad = ' '.repeat(n)
+  return str.split('\n').map(l => pad + l).join('\n')
+}
+
+/**
+ * Lecture bornée en JSON (change add-read-at) : ancre résolue + compte masqué +
+ * textes intégraux. API TABLEAU inchangée ; le chemin en flux (`readJsonChunks`)
+ * réutilise enveloppe et messages pour un rendu octet pour octet identique.
+ */
+export function renderReadJson (slice, sessionId) {
+  const { events: evs, spans } = slice
+  const last = slice.maxIdx == null ? evs.length - 1 : slice.maxIdx
+  const total = slice.total ?? evs.length
+  const idxs = []
+  for (const [a, b] of spans) for (let i = a; i <= b; i++) idxs.push(i)
+  const evById = new Map(evs.map(e => [e.id, e]))
+  const messages = []
+  for (const i of idxs) {
+    const e = evById.get(idOfIndex(slice, i)) || evs[idxs.indexOf(i)]
+    if (!e) continue
+    messages.push(readJsonMessage(e, i))
+  }
+  return JSON.stringify({ ...readJsonEnvelope(slice, sessionId, last, total), messages }, null, 2)
+}
+
+/**
+ * Rendu JSON EN FLUX : produit la MÊME chaîne que `renderReadJson` (mêmes clés,
+ * même ordre, même indentation, `[]` si aucun message), sans jamais construire
+ * le tableau des messages — un message JSON est émis par événement consommé.
+ */
+export async function * readJsonChunks (slice, sessionId, events) {
+  const last = slice.maxIdx == null ? -1 : slice.maxIdx
+  const head = JSON.stringify(readJsonEnvelope(slice, sessionId, last, slice.total ?? last + 1), null, 2).slice(0, -2) + ',\n  "messages": '
+  const it = events[Symbol.asyncIterator]()
+  try {
+    const first = await it.next()
+    if (first.done) { yield head + '[]\n}'; return }
+    yield head + '[\n'
+    yield indentLines(JSON.stringify(readJsonMessage(first.value.event, first.value.index), null, 2), 4)
+    for (let r = await it.next(); !r.done; r = await it.next()) {
+      yield ',\n' + indentLines(JSON.stringify(readJsonMessage(r.value.event, r.value.index), null, 2), 4)
+    }
+    yield '\n  ]\n}'
+  } finally {
+    // Consommateur sorti tôt : referme le flux amont (transaction de lecture comprise).
+    try { await it.return?.() } catch {}
+  }
 }
 
 // index positionnel → id (spans partiels : la fenêtre n'est pas chargée en entier)

@@ -23,7 +23,7 @@
 //     géante coûtait la longueur de la session. Chaque fenêtre est bornée par la clé
 //     (ts, id) : coût O(fenêtre), quelle que soit la position. Les compteurs restent
 //     des dénombrements de plage indexés (coût documenté, mesuré au banc).
-import { openView, inReadTx } from './view.js'
+import { openView, inReadTx, checkFresh } from './view.js'
 import { fmtTs, utcFromParts } from './util.js'
 
 /** Fusionne les fenêtres [i-ctx, i+ctx] autour des index de hits. */
@@ -150,6 +150,99 @@ export function sessionSlice (root, sessionId, { aroundId, ctx = DEFAULT_READ_CT
   } finally {
     db.close()
   }
+}
+
+/**
+ * Chemin de LECTURE EN FLUX (change scale-corpus, sous-partie « read complet ») :
+ * MÊME résolution que `sessionSliceDb` (fenêtres keyset, ancre inclusive, compteurs
+ * de plage, avertissements/erreurs), mais ne matérialise JAMAIS la session — les
+ * événements sont rendus par l'itérateur PARESSEUX `Statement.iterate()`, un à la
+ * fois. Le coût mémoire du parcours est borné par la fenêtre et par un événement
+ * rendu (jamais par la session ni le corpus) ; la taille d'un événement, elle,
+ * reste une borne (pas de promesse « mémoire indépendante de la taille
+ * événement »).
+ *
+ * Snapshot : UNE transaction de lecture (`BEGIN`) reste ouverte pendant TOUTE la
+ * consommation — y compris à travers les attentes de backpressure de stdout — puis
+ * `COMMIT`. L'API synchrone `inReadTx` ne peut pas attendre un consommateur
+ * asynchrone : la transaction est donc pilotée ici, avec la même revalidation de
+ * fraîcheur, `ROLLBACK` sur erreur ou sortie anticipée. `iter.return()` est
+ * TOUJOURS appelé AVANT `COMMIT`/`ROLLBACK` (better-sqlite3 refuse toute autre
+ * instruction sur une connexion occupée par un itérateur vivant) et la connexion
+ * est fermée dans tous les cas.
+ *
+ * Contrepartie assumée : une transaction de lecture ouverte retient le snapshot
+ * WAL tant que le consommateur tire ses octets (un pipe lent retarde le checkpoint
+ * WAL). Ce coût est documenté, pas caché.
+ *
+ * Yield : `{ kind: 'window', window }` (window `null` = session inconnue), puis
+ * `{ kind: 'event', index, event }` dans l'ordre (ts, id) des spans (un span :
+ * `around`/`tail`/`all`). Semantique et comptes identiques à `sessionSlice`.
+ */
+export async function * streamRead (root, sessionId, { aroundId, ctx = DEFAULT_READ_CTX, tail, at } = {}) {
+  const db = openView(root)
+  let begun = false
+  let iter = null
+  let done = false
+  let failure = null
+  try {
+    // BEGIN DANS le try : une erreur de BEGIN laisse la connexion refermée par
+    // le finally (aucune fuite de descripteur).
+    db.exec('BEGIN')
+    begun = true
+    // Même revalidation que `inReadTx` : `openView` a vérifié la fraîcheur avant
+    // le BEGIN, une publication a pu s'intercaler depuis — le snapshot lui-même
+    // est revalidé avant toute donnée rendue.
+    const fresh = checkFresh(root, { db })
+    if (!fresh.fresh) throw new Error(fresh.reason)
+    const w = resolveReadWindowDb(db, sessionId, { aroundId, ctx, tail, at })
+    // Parité avec `sessionSlice`/`sessionSliceDb` : une session SANS message
+    // (total 0) rend `null` côté CLI (comportement préservé).
+    yield { kind: 'window', window: w && w.total === 0 ? null : w }
+    if (w && !w.fatal && w.mode !== 'empty' && w.mode !== 'around-masked') {
+      iter = eventsIter(db, sessionId, w)
+      let i = w.spans.length ? w.spans[0][0] : 0
+      for (const row of iter) {
+        yield { kind: 'event', index: i, event: JSON.parse(row.json) }
+        i++
+      }
+    }
+    // Itérateur lâché AVANT le COMMIT (connexion non occupée). Une erreur de
+    // `return()` n'est PAS avalée : elle empêche le COMMIT et remonte au
+    // consommateur — le finally referme la connexion.
+    if (iter) { iter.return?.(); iter = null }
+    db.exec('COMMIT')
+    done = true
+  } catch (err) {
+    failure = err
+    throw err
+  } finally {
+    // Toujours tenter tous les nettoyages. Une erreur d'origine prime ; sans
+    // erreur d'origine, un échec de nettoyage doit rester visible au consommateur.
+    let cleanupError = null
+    if (iter) { try { iter.return?.() } catch (err) { cleanupError = err } }
+    if (begun && !done) { try { db.exec('ROLLBACK') } catch (err) { cleanupError ??= err } }
+    try { db.close() } catch (err) { cleanupError ??= err }
+    if (!failure && cleanupError) throw cleanupError
+  }
+}
+
+/**
+ * Itérateur PARESSEUX (`Statement.iterate()`) des événements complets de la
+ * fenêtre résolue : bornes keyset EXACTES (mêmes SQL que `eventsAllFor`/
+ * `eventsForKeys`), un seul `json` d'événement vivant à la fois. Jamais `.all()`.
+ */
+function eventsIter (db, sessionId, w) {
+  if (w.mode === 'all') {
+    return db.prepare(`SELECT json FROM events WHERE session_id = ? AND ${NON_TITLE} ORDER BY ts, id LIMIT ?`)
+      .iterate(sessionId, w.maxIdx + 1)
+  }
+  const keys = w.keys
+  if (!keys.length) return [][Symbol.iterator]()
+  const first = keys[0]
+  const last = keys[keys.length - 1]
+  return db.prepare(`SELECT json FROM events WHERE session_id = @sid AND ${NON_TITLE} AND (ts > @fts OR (ts = @fts AND id >= @fid)) AND (ts < @lts OR (ts = @lts AND id <= @lid)) ORDER BY ts, id`)
+    .iterate({ sid: sessionId, fts: first.ts, fid: first.id, lts: last.ts, lid: last.id })
 }
 
 /** Variante à Database ouverte : la transaction de lecture est portée par l'appelant. */

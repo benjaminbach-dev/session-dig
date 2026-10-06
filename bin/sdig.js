@@ -8,7 +8,7 @@ import { corpusPaths, sourceDb, sourcePi, corpusRoot } from '../src/paths.js'
 import { openView, viewPath, viewIsCurrent, inReadTx, checkFresh, sourceStatesOf, piTokenOf } from '../src/view.js'
 import { rawShardPath } from '../src/layout.js'
 import { renderTerminal, renderJson, renderStatus, renderFingerprint, renderChrono } from '../src/format.js'
-import { parseDateBound, streamBytes } from '../src/util.js'
+import { parseDateBound, streamBytes, streamToWritable } from '../src/util.js'
 import { neighborsBySessionDb } from '../src/read.js'
 import { rawScan, openProofFd } from '../src/raw.js'
 import fs from 'node:fs'
@@ -430,34 +430,71 @@ async function main () {
     const sessionId = positional[0]
     if (!sessionId) fail('usage : sdig read <session> [--around <msgId>] [--ctx N] [--tail N] [--at <ancre>] [--full | --chars N] [--json]')
     const chars = parseChars(flags)
-    const { sessionSlice } = await import('../src/read.js')
-    const { renderRead, renderReadJson } = await import('../src/format.js')
-    let slice
+    // Chemin de lecture EN FLUX (scale-corpus) : la vue est ouverte et la
+    // transaction de lecture reste ouverte pendant TOUTE la consommation, mais
+    // aucun événement n'est matérialisé — `streamRead` rend la fenêtre résolue
+    // puis les événements par itérateur paresseux, `readTerminalChunks`/
+    // `readJsonChunks` les rendent octet pour octet à l'identique des fonctions
+    // tableau (`renderRead`/`renderReadJson`), avec backpressure stdout.
+    const { streamRead } = await import('../src/read.js')
+    const { readTerminalChunks, readJsonChunks } = await import('../src/format.js')
+    const sink = streamToWritable(process.stdout)
+    const write = sink.write
+    const readOpts = {
+      aroundId: flags.around,
+      ctx: flags.ctx ? parseInt(flags.ctx, 10) : 10,
+      tail: flags.tail ? parseInt(flags.tail, 10) : undefined,
+      at: flags.at
+    }
+    let stream = null
     try {
-      slice = sessionSlice(paths.root, sessionId, {
-        aroundId: flags.around,
-        ctx: flags.ctx ? parseInt(flags.ctx, 10) : 10,
-        tail: flags.tail ? parseInt(flags.tail, 10) : undefined,
-        at: flags.at
-      })
+      stream = streamRead(paths.root, sessionId, readOpts)[Symbol.asyncIterator]()
+      const head = await stream.next()
+      const w = head.done ? null : head.value.window
+      if (!w) {
+        await stream.return()
+        sink.dispose()
+        fail(`session inconnue : ${sessionId} (préfixe accepté dans sdig --session, pas ici — id complet requis)`)
+      }
+      // Ancre invalide : erreur explicite, sortie non nulle, aucune sortie partielle trompeuse.
+      if (w.fatal) {
+        await stream.return()
+        sink.dispose()
+        fail(w.error, 2)
+      }
+      // Avertissement de publication (marqueur d'ingestion non réconcilié : une preuve
+      // peut être en avance sur la vue) : en terminal il reste sur stdout, jamais perdu.
+      // En --json, stdout SHALL rester UN document JSON valide — l'avertissement part
+      // sur stderr (toujours visible), il n'est ni supprimé ni préfixé au JSON.
+      const warn = proofWarning(paths.root)
+      if (warn) {
+        if (flags.json) console.error(warn)
+        else await write(warn + '\n')
+      }
+      // `w` porte la même forme de fenêtre que `sessionSliceDb` ; `error` y vaut
+      // l'avertissement non fatal (nul sinon), comme côté tableau.
+      const slice = { ...w, error: w.warning ?? null }
+      const events = { [Symbol.asyncIterator]: () => stream }
+      if (flags.json) {
+        for await (const chunk of readJsonChunks(slice, sessionId, events)) await write(chunk)
+        await write('\n') // console.log historique : un document + saut de ligne
+      } else {
+        for await (const chunk of readTerminalChunks(slice, sessionId, { full: !!flags.full, chars, plain: !!flags.plain }, events)) await write(chunk)
+      }
+      return
     } catch (e) {
-      fail(e.message) // vue absente/périmée : refus explicite, jamais un repli silencieux
+      // Vue absente/périmée/écriture refusée : refus explicite, jamais un repli
+      // silencieux. `fail` termine le processus sans exécuter le finally :
+      // refermer aussi le flux si l'avertissement a échoué avant le rendu.
+      if (stream) { try { await stream.return() } catch {} }
+      sink.dispose()
+      fail(e.message)
+    } finally {
+      // Consommateur sorti tôt (erreur d'écriture incluse) : `return()` déclenche
+      // le nettoyage du générateur (itérateur lâché, ROLLBACK, connexion fermée).
+      if (stream) { try { await stream.return() } catch {} }
+      sink.dispose()
     }
-    if (!slice) fail(`session inconnue : ${sessionId} (préfixe accepté dans sdig --session, pas ici — id complet requis)`)
-    // Ancre invalide : erreur explicite, sortie non nulle, aucune sortie partielle trompeuse.
-    if (slice.fatal) fail(slice.error, 2)
-    // Avertissement de publication (marqueur d'ingestion non réconcilié : une preuve
-    // peut être en avance sur la vue) : en terminal il reste sur stdout, jamais perdu.
-    // En --json, stdout SHALL rester UN document JSON valide — l'avertissement part
-    // sur stderr (toujours visible), il n'est ni supprimé ni préfixé au JSON.
-    const warn = proofWarning(paths.root)
-    if (warn) {
-      if (flags.json) console.error(warn)
-      else console.log(warn)
-    }
-    if (flags.json) { console.log(renderReadJson(slice, sessionId)); return }
-    console.log(renderRead(slice, sessionId, { full: !!flags.full, chars, plain: !!flags.plain }))
-    return
   }
 
   if (isSub && sub === 'raw') {

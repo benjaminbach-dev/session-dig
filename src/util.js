@@ -225,6 +225,57 @@ export function parseDateBound (s, end = false) {
   return Number.isNaN(t) ? null : t
 }
 
+/**
+ * Adaptateur d'écriture vers un `Writable` Node (change scale-corpus, lecture en
+ * flux), cycle de vie EXPLICITE `{ write, dispose }`.
+ *
+ * `write(chunk)` attend le CALLBACK de `writable.write(chunk, cb)` : le chunk est
+ * réellement traité (backpressure naturelle, un chunk en vol à la fois) et une
+ * erreur TARDIVE (après un `write()` ayant rendu `true`, ex. EPIPE) n'est jamais
+ * perdue — la commande ne peut pas annoncer un succès alors que le dernier chunk
+ * a échoué. Une erreur du flux (`error`) ou une fermeture (`close`, destroy sans
+ * erreur comprise) rejette les écritures en attente et fait échouer les suivantes ;
+ * aucune écriture n'est silencieusement perdue. `dispose()` retire les écouteurs
+ * (sink réutilisable sans fuite) ; le flux n'est NI `end()` NI `destroy()`
+ * (process.stdout/process.stderr ne doivent jamais être fermés).
+ */
+export function streamToWritable (writable) {
+  let failure = null
+  let closed = false
+  const pending = new Set()
+  const failAll = (err) => {
+    failure = failure ?? err
+    for (const entry of [...pending]) entry.reject(failure)
+  }
+  const onError = (err) => failAll(err)
+  const onClose = () => { closed = true; failAll(new Error('flux fermé sans erreur (destroy)')) }
+  writable.on('error', onError)
+  writable.on('close', onClose)
+  const dispose = () => {
+    writable.removeListener('error', onError)
+    writable.removeListener('close', onClose)
+  }
+  const write = (chunk) => {
+    if (failure) return Promise.reject(failure)
+    if (closed) return Promise.reject(new Error('flux fermé'))
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const settle = (err) => {
+        if (settled) return
+        settled = true
+        pending.delete(entry)
+        if (err) { failure = failure ?? err; reject(failure) } else resolve()
+      }
+      // `settle` peut être appelé SYNCHRONEMENT par un flux synchrone : l'entrée
+      // est enregistrée AVANT `write`, et `settled` neutralise le double appel.
+      const entry = { reject: (e) => settle(e) }
+      pending.add(entry)
+      try { writable.write(chunk, settle) } catch (err) { settle(err) }
+    })
+  }
+  return { write, dispose }
+}
+
 /** Horodatage lisible UTC. `0` (epoch) est une date VALIDE, jamais `?`. */
 export function fmtTs (ms) {
   if (ms == null || !Number.isFinite(ms)) return '?'
