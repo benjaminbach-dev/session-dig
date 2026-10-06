@@ -4,29 +4,32 @@
     "expect": [
       "ses_0150610d0ffe6S97cE368ypcGy"
     ],
-    "note": "seed (titre exact : « Openchamber: erreur d'installation proot Debian »)"
+    "note": "seed (titre exact : « Openchamber: erreur d'installation proot Debian ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Aucune session actuelle sur une erreur d'installation OpenChamber sous proot/Debian.",
+    "knownMiss": true
   },
   {
     "q": "localiser configuration globale openchamber",
     "expect": [
-      "ses_0000181d5ffeEuw4vQ6KL3uI9v",
-      "ses_0000164baffe5eyVK7Kd7YMyJO"
+      "ses_f7f6b2e93ffedJ9HCBmFE6ICSi"
     ],
-    "note": "seed (parent + subagent @explore tous deux valides)"
+    "note": "seed (parent + subagent @explore tous deux valides) re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelle cible : « Mise à jour configuration opencode openchamber » (ses_f7f6b2e93ffedJ9HCBmFE6ICSi) — le user demande explicitement de « localiser chaque dossier de conf » opencode/openchamber."
   },
   {
     "q": "connexion github clé ssh debian proot",
     "expect": [
       "ses_00a43ee25ffe7X3kqyxjGQ0QIA"
     ],
-    "note": "seed (titre exact)"
+    "note": "seed (titre exact) re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Candidat approchant refusé : « Restructuration starter » (ses_1539bb0c1) couvre GitHub + clé SSH + keychain + ssh/config, mais sur Manjaro desktop, sans Debian/proot.",
+    "knownMiss": true
   },
   {
     "q": "rédiger specs console kirby",
     "expect": [
-      "ses_00940151bffeb473aUPC902c8w"
+      "ses_fe9319b5fffeOwgC2Q1gHGwdWD",
+      "ses_fe93ed66bffeqJafssVaNjZu2s"
     ],
-    "note": "seed — résolu le 17/09 par l indexation des titres (le titre exact « Rédiger specs console Kirby » remporte maintenant le AND)"
+    "note": "seed — résolu le 17/09 par l indexation des titres (le titre exact « Rédiger specs console Kirby » remporte maintenant le AND) re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). ÉQUIVALENT retenu (arbitrage principal 06/10/2026) : « Apply sol review revisions » (ses_fe9319b5) et « Update specs for conversation relay » (ses_fe93ed66) — trace survivante du même travail sur les specs console Kirby (révision des artefacts OpenSpec de add-kirby-agent-console). Complément 06/10/2026 : réponse légitime au rang 4 (« Apply sol review revisions ») ; les rangs 1–3 sont hors sujet (Drupal, specs migration Vite, specs migration OpenSpec) — écart de classement documenté le 06/10, non compté comme échec.",
+    "knownMiss": true
   },
   {
     "q": "setup termux debian",
@@ -34,72 +37,85 @@
       "ses_2f29abf37ffeRxpZ9YpVujFhA3",
       "ses_fa892748dffebr1LxpR4AX5LIE"
     ],
-    "note": "seed (mars : première session « setup termux / debian » ; août : « Termux proot Debian setup » — les deux sont de bonnes réponses)"
+    "note": "seed (mars : première session « setup termux / debian » ; août : « Termux proot Debian setup » — les deux sont de bonnes réponses) re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Candidat approchant refusé : « Opencode setup description planning (READ-ONLY) » (ses_2cec534c) décrit le setup opencode cross-env Manjaro/Termux/Proot/Debian, sans traiter d'un « setup termux debian ».",
+    "knownMiss": true
   },
   {
     "q": "télécharger musique youtube yt-dlp exif agent",
     "expect": [
-      "ses_2ddd37affffe8LT5ldSzh9TKFQ",
-      "ses_2ddbde041ffeNxUA1XxXgojUO6"
+      "ses_311a9d34effe91lJ7yVTTRM7CZ",
+      "ses_307b6642effeO9QggYUiHa1F0m",
+      "ses_311c29bc7ffevBNiMxl2ObCKiz",
+      "ses_311a9cc43ffexmfN4Ld4ZRzHQp"
     ],
-    "note": "auto 17/09 — plusieurs sessions Music sur yt-dlp/ffmpeg/EXIF, la principale est « Gestion de musique: agent de téléchargement et EXIF »"
+    "note": "auto 17/09 — plusieurs sessions Music sur yt-dlp/ffmpeg/EXIF, la principale est « Gestion de musique: agent de téléchargement et EXIF » re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelles cibles : « Recherche yt-dlp docs... download MP3 with metadata and cover art » (ses_311a9d34, r1), « Musique: organiser dossier, téléchargements yt-dlp, ffmpeg exifs » (ses_307b6642, r5), « Audio file EXIF modifications check » (ses_311c29bc7), « YT-DLP documentation... » (ses_311a9cc43, non classée) — mêmes thèmes yt-dlp/ffmpeg/EXIF."
   },
   {
     "q": "outils plus rapides que grep ls read cat pour agents termux",
     "expect": [
-      "ses_2d6cc7029ffeVrpQ2I7Ibj2n23"
+      "ses_2d94783a8ffe8AUCpIl3P6ltY0"
     ],
-    "note": "auto 17/09 (titre « Termux: faster tools than grep/ls/read/cat for agents »)"
+    "note": "auto 17/09 (titre « Termux: faster tools than grep/ls/read/cat for agents ») re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelle cible : « Environnement Manjaro/KDE/Zed dans AGENTS.md » (ses_2d94783a, r1) — la session traite exactement des outils plus rapides pour remplacer ls/cat/grep pour les agents ; nuance : contexte Manjaro, pas Termux."
   },
   {
     "q": "automatisation email sur termux",
     "expect": [
       "ses_29106c93fffekCiU3LNM3E7QoB"
     ],
-    "note": "auto 17/09 (titre « Email automation on Termux »)"
+    "note": "auto 17/09 (titre « Email automation on Termux ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Aucune session Termux + email/automatisation.",
+    "knownMiss": true
   },
   {
     "q": "générer une appli android pour mon téléphone",
     "expect": [
       "ses_28beec1bbffeqBVGT1ra62AzLO"
     ],
-    "note": "auto 17/09 — reformulé volontairement sans les mots du titre (« APK production for personal phone installation ») : test de rappel hors vocabulaire du titre"
+    "note": "auto 17/09 — reformulé volontairement sans les mots du titre (« APK production for personal phone installation ») : test de rappel hors vocabulaire du titre re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Aucune session APK/Android (les hits « android » sont du contenu web/CRM sans rapport).",
+    "knownMiss": true
   },
   {
     "q": "avantages des git worktrees",
     "expect": [
       "ses_286a1872bffezD7CUmxPWOIvx1"
     ],
-    "note": "auto 17/09 (titre « Git worktrees: benefits and use cases »)"
+    "note": "auto 17/09 (titre « Git worktrees: benefits and use cases ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. « worktree » n'apparaît qu'incidemment ; aucune session n'explique les avantages des git worktrees.",
+    "knownMiss": true
   },
   {
     "q": "ollama plans gratuits ou payants",
     "expect": [
       "ses_243f8faebffeNn7giLQsEMHwZk"
     ],
-    "note": "auto 17/09 — reformulé (« Politique plans free et pro Ollama »)"
+    "note": "auto 17/09 — reformulé (« Politique plans free et pro Ollama ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Les sessions Ollama actuelles portent sur les modèles/benchmarks, pas sur la politique des plans free/pro.",
+    "knownMiss": true
   },
   {
     "q": "config lando kirby vite",
     "expect": [
-      "ses_2396faad4ffepsswBQ8oMqfMCw",
-      "ses_23662c1deffeOh1IayyQNQ3a8X"
+      "ses_22f79195effejjxksoPnTHfI59",
+      "ses_22f793eb2ffeWiUWMpvn4nO0KC",
+      "ses_11ec8a1b3fferPkcpcO6YGIqtc",
+      "ses_11e3b1352ffedWTt3uGnHqr5wn",
+      "ses_11e652788ffeYg1ikKvNsXec9S"
     ],
-    "note": "auto 17/09 — deux sessions Lando Kirby + Vite (avril), toutes deux valides"
+    "note": "auto 17/09 — deux sessions Lando Kirby + Vite (avril), toutes deux valides re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelles cibles : « Site Kirby avec Lando et Vite » (ses_22f79195, r4), « Création site Kirby avec Lando et Vite » (ses_22f793eb2, r6), « Proposition config vite.js » (ses_11ec8a1b3, r3) — sessions Lando/Kirby/Vite du corpus actuel. Complément 06/10/2026 : seconds hits légitimes du même chantier kirby-starter Lando/Vite, ajoutés à la vérité terrain — « Review Vite migration plan » (ses_11e3b135, r1) et « Research Vite+Kirby plugin » (ses_11e65278, r2)."
   },
   {
     "q": "comment marche la compaction opencode",
     "expect": [
-      "ses_234b333ccffe5BQ76dc1mVBY0f"
+      "ses_1e762b49effecNh55QbflEn37w",
+      "ses_1e7658720ffeEnjwgbQMuKJfAf"
     ],
-    "note": "auto 17/09 — reformulé (« Mécanisme compaction opencode »)"
+    "note": "auto 17/09 — reformulé (« Mécanisme compaction opencode ») re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelle cible : « New session - 2026-05-11T19:57 » (ses_1e762b49, r4) — le user demande « Explique moi auto et prune pour la compaction » et la session explique le mécanisme + la compaction manuelle. Complément 06/10/2026 : cible légitime aux rangs 2/5 (« New session - 2026-05-11T19:53 » / ses_1e765872, même soirée que la réponse 19:57), mais le top-1 (« Réglages context7 opencode », audit de réglages, pas une explication) n'est pas une réponse — écart de CLASSEMENT documenté le 06/10 (manque lexical, signal pour embeddings v2), non compté comme échec.",
+    "knownMiss": true
   },
   {
     "q": "modèles gratuits opencode zen cas d'usage",
     "expect": [
       "ses_228e5e2b9ffezbn5bLrl71y4fN"
     ],
-    "note": "auto 17/09 (titre « Cas d'usage typiques modèles gratuits OpenCode Zen »)"
+    "note": "auto 17/09 (titre « Cas d'usage typiques modèles gratuits OpenCode Zen ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Le corpus traite d'OpenCode Go (payant) / benchmarks ; pas de session « modèles gratuits Zen + cas d'usage ».",
+    "knownMiss": true
   },
   {
     "q": "changer la police de l'interface opencode termux",
@@ -107,15 +123,16 @@
       "ses_21d98e950ffe3c9RyE05eC3bfl",
       "ses_2d286c7faffemYLKTSp3K7pFkn"
     ],
-    "note": "auto 17/09 — ambiguïté réelle : la session « Lilex → ~/.termux/font.ttf, redémarrez Termux pour appliquer la police » change la police du terminal (donc de l'UI opencode dedans), l'autre change la police de l'UI opencode web. Les deux répondent à la question, acceptées."
+    "note": "auto 17/09 — ambiguïté réelle : la session « Lilex → ~/.termux/font.ttf, redémarrez Termux pour appliquer la police » change la police du terminal (donc de l'UI opencode dedans), l'autre change la police de l'UI opencode web. Les deux répondent à la question, acceptées. re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Zéro co-occurrence police/font + Termux ; le top-1 est une session pi sur la police de Zed.",
+    "knownMiss": true
   },
   {
     "q": "comment utiliser openspec",
     "expect": [
-      "ses_20b061fbaffeendeOuzw0tfn7p",
-      "ses_20bd7fe1effeIOG9Blx60Z9o7V"
+      "ses_20ccab20effeCeU9LlHU9f43p1"
     ],
-    "note": "auto 17/09 — deux sessions mai sur OpenSpec usage, toutes deux valides"
+    "note": "auto 17/09 — deux sessions mai sur OpenSpec usage, toutes deux valides re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelle cible : « Opencode config workflow reference » (ses_20ccab20, r4) — le user demande « Donne moi les commandes fournis par open spec. Ou alors la méthode pour s'en servir ». Complément 06/10/2026 : réponse légitime au rang 4 (« Opencode config workflow reference ») ; top-1/top-3 hors sujet (SEO/JSON-LD, ajax, Search Console) — écart de classement documenté le 06/10, non compté comme échec.",
+    "knownMiss": true
   },
   {
     "q": "chutes.ai",
@@ -123,44 +140,51 @@
       "ses_201384c85ffeC7854w1WQQ03tr",
       "ses_201378c25ffeJ8LONq10UotcRY"
     ],
-    "note": "auto 17/09 — le top-1 trouvé (subagent « research the Chutes.ai platform, model quantization ») est le sous-agent de recherche de la session « Chutes.ai app » : même sujet, cible légitime ajoutée à la vérité terrain."
+    "note": "auto 17/09 — le top-1 trouvé (subagent « research the Chutes.ai platform, model quantization ») est le sous-agent de recherche de la session « Chutes.ai app » : même sujet, cible légitime ajoutée à la vérité terrain. re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Chutes.ai n'est mentionné qu'en liste dans une session sans rapport ; pas de session plateforme/quantization.",
+    "knownMiss": true
   },
   {
     "q": "opencode sur termux faut-il proot",
     "expect": [
       "ses_1f67640bbffekwkgNlbdE5k9CQ"
     ],
-    "note": "auto 17/09 — reformulé (« Opencode sur Termux : proot ou pas ? »)"
+    "note": "auto 17/09 — reformulé (« Opencode sur Termux : proot ou pas ? ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Aucune session ne répond à la question ; ses_2cec534c ne fait que mentionner Termux/proot-distro.",
+    "knownMiss": true
   },
   {
     "q": "debug config .opencode termux",
     "expect": [
-      "ses_1c84e7815ffewPgEGKFHNbeDY2",
-      "ses_1c853f0daffe8GSY6OOi9RckSN"
+      "ses_135d9be5dffeJaxFe0g56krc8h",
+      "ses_135d204c9ffeL7CCMZahRObGMX",
+      "ses_135b494c2ffePgU9wIiWo3lkdE",
+      "ses_0463fb519ffeil5wB2xFqFnnlT",
+      "ses_f56a94ad0ffeE89t5iC196EESG"
     ],
-    "note": "auto 17/09 — deux sessions debug sur .opencode/ en mai, toutes deux valides"
+    "note": "auto 17/09 — deux sessions debug sur .opencode/ en mai, toutes deux valides re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). ÉQUIVALENT retenu (arbitrage principal 06/10/2026) : « Synthèse du projet via explore » (ses_135d9be5) et ses subagents « Audit bash script cross-env compatibility » (ses_135d204c), « Review refactored music toolchain » (ses_135b494c) — audit/debug du .opencode en cross-env incluant Termux. Complément 06/10/2026 : vérifications de la config opencode, meilleures réponses survivantes à l'intention « debug config .opencode » — « Vérifier cohérence agents » (ses_0463fb51, r1) et « Vérification MCP et agents » (ses_f56a94ad, r2)."
   },
   {
     "q": "ctx_search",
     "expect": [
-      "ses_194c69d38ffeqbTB6FeB8OZQs5",
-      "ses_170735d2fffeareg7qb12nxU3o"
+      "ses_17cbb5484ffewHw79rhP7csZJx",
+      "ses_195f85927ffekdtKw84AsYo8qP"
     ],
-    "note": "auto 17/09 (titre « Question sur ctx_search ») — test mono-terme technique — 17/09 : la session « Vérifie si context mode marche / Essaye ctx_search » est un second hit légitime, ajoutée à la vérité terrain"
+    "note": "auto 17/09 (titre « Question sur ctx_search ») — test mono-terme technique — 17/09 : la session « Vérifie si context mode marche / Essaye ctx_search » est un second hit légitime, ajoutée à la vérité terrain re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelles cibles : « Question sur ctx_search » (ses_17cbb5484, r1) et « Démonstration de ctx_search » (ses_195f85927, r3) — même intention mono-terme que la note."
   },
   {
     "q": "modes plan et build opencode",
     "expect": [
-      "ses_17b06238dffeBYitdNLQqT0cYZ"
+      "ses_f7f85415affetzh2vaCj4QfY2d",
+      "ses_f7f817825ffeF6NnJseYbROjZQ"
     ],
-    "note": "auto 17/09 (titre « Modes plan et build d'OpenCode »)"
+    "note": "auto 17/09 (titre « Modes plan et build d'OpenCode ») re-curation 06/10/2026 : cible d'origine absente du corpus actuel (drift de données entre 19/09 et 05/10 ; source opencode perdue + corpus reconstruit, refresh 2 398 sessions). Nouvelles cibles : « Opencode mini: passer du mode plan au build » (ses_f7f85415, r8) et son subagent « Documenter TUI mini opencode » (ses_f7f817825, r1) qui explique la distinction agent plan/build vs permission mode."
   },
   {
     "q": "canopy wave ou synthetic",
     "expect": [
       "ses_0affb1cbcffeCyD7o28GFmMVYA"
     ],
-    "note": "auto 17/09 — session non-techno (« Canopy Wave vs Synthetic à 30€ ») : l'historique ne parle pas que de code"
+    "note": "auto 17/09 — session non-techno (« Canopy Wave vs Synthetic à 30€ ») : l'historique ne parle pas que de code re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Zéro session Canopy ; les hits « wave/synthetic » sont des thèmes Kanagawa/tests sans rapport.",
+    "knownMiss": true
   },
   {
     "q": "faisabilité plugin ai agent ks-agent",
@@ -168,41 +192,47 @@
       "ses_fffcded12ffeDFT6v8dlajulNv",
       "ses_fc22dd45fffeNSicTOncbabtvU"
     ],
-    "note": "auto 17/09 (titre ks-agent « Plugin ai agent v0.1 : évaluation de faisabilité ») — 17/09 : subagent @explore qui confronte les specs du plugin ai agent au code, cible légitime ajoutée à la vérité terrain"
+    "note": "auto 17/09 (titre ks-agent « Plugin ai agent v0.1 : évaluation de faisabilité ») — 17/09 : subagent @explore qui confronte les specs du plugin ai agent au code, cible légitime ajoutée à la vérité terrain re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Candidats approchants refusés : « Explore ks-agent Kirby module » (ses_fe97c0c36) et « Terminer les specs du plugin » (ses_fc0996d6) portent sur le plugin ai-assistant/ks-agent implémenté, plus sur l'évaluation de faisabilité v0.1.",
+    "knownMiss": true
   },
   {
     "q": "installer le backend paseo sous proot",
     "expect": [
       "ses_f971a7d99ffeeceaTPa73O3pWc"
     ],
-    "note": "auto 17/09 (titre « Installation du backend Paseo sous proot »)"
+    "note": "auto 17/09 (titre « Installation du backend Paseo sous proot ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Seule une analyse de compatibilité Paseo (session pi de migration de conf) existe ; pas d'installation backend sous proot.",
+    "knownMiss": true
   },
   {
     "q": "retirer paseo proprement",
     "expect": [
       "ses_f9184c50bffeYPKfkfbz44jqCx"
     ],
-    "note": "auto 17/09 — reformulé (« Suppression propre de paseo de l'environnement ») : teste la distinction installation vs suppression (sessions voisines)"
+    "note": "auto 17/09 — reformulé (« Suppression propre de paseo de l'environnement ») : teste la distinction installation vs suppression (sessions voisines) re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Aucune session de suppression/désinstallation de Paseo.",
+    "knownMiss": true
   },
   {
     "q": "pourquoi big pickle absent opencode web",
     "expect": [
       "ses_23ec3acb2ffenQGXiqfLMVWYck"
     ],
-    "note": "auto 17/09 — reformulé (« Pourquoi j'ai pas big pickle dans opencode web »)"
+    "note": "auto 17/09 — reformulé (« Pourquoi j'ai pas big pickle dans opencode web ») re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Les hits ne font que constater le modèle courant ; aucune session sur son absence d'opencode web.",
+    "knownMiss": true
   },
   {
     "q": "prêts écrire specs produit architecture règles figer",
     "expect": [
       "ses_00a1b1eabffeN5Z9RzBfZUuRcN"
     ],
-    "note": "brûlée (analyse 19/09, troncation — n43) — reformulation d'une question naturelle dont la réponse énumère dix règles et six capacités ; cible du remède --full (contenu intégral)"
+    "note": "brûlée (analyse 19/09, troncation — n43) — reformulation d'une question naturelle dont la réponse énumère dix règles et six capacités ; cible du remède --full (contenu intégral) re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Cible brûlée (n43) perdue ; aucune session actuelle ne correspond à cette reformulation (candidats génériques « specs/architecture » non concluants).",
+    "knownMiss": true
   },
   {
     "q": "supprimer oauth résout P0 impersonate remote token",
     "expect": [
       "ses_fc2433a05ffeC6le6PEkHBfV70"
     ],
-    "note": "brûlée (analyse 19/09, troncation — n41) — reformulation d'une question naturelle sur la suppression d'OAuth et les P0 restants (impersonate) ; cible du remède --full"
+    "note": "brûlée (analyse 19/09, troncation — n41) — reformulation d'une question naturelle sur la suppression d'OAuth et les P0 restants (impersonate) ; cible du remède --full re-curation 06/10/2026 : cible disparue de la source opencode (drift de données constaté le 06/10/2026 — les sessions dorées ont disparu de la source entre le 19/09 et le 05/10, cause données, pas code) ; requête conservée comme témoin du drift. Candidat approchant refusé : « Verify vendor governance contracts » (ses_f78241dae) vérifie la politique remote-token-only bloquant les routes OAuth de kirby-mcp, sans occurrence d'« impersonate » liée au sujet.",
+    "knownMiss": true
   }
 ]
