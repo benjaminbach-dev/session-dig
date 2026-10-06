@@ -2,6 +2,14 @@
 
 **Change NON terminé, NON archivé.** Cette fiche remplace les anciens bilans « tout coché ». Les specs décrivent la cible ; les cases rouvertes dans tasks.md sont des écarts restant à traiter. Pas de démarrage du MCP implicite. **Rescopage à la demande explicite de l'utilisateur** : jalon « usage solo local validé sur PC » en trois lots (A intégrité/prérequis, B MCP minimal + validation PC, C optimisations conditionnées aux mesures) — voir proposition ; le premier usage MCP n'attend pas la clôture complète de scale-corpus ; intégrité/reprise et exclusion d'écrivains restent bloquantes avant usage sur corpus réel. Prototypage sur fixtures permis avant le jalon. Cet encadré ne transforme pas les validations historiques ci-dessous en validations nouvelles.
 
+## Sources personnelles réelles — 06/10/2026 : plan SQL et delta pi mesurés
+
+> Bilan dédié : [validation-pc-2026-10-06-sources.md](validation-pc-2026-10-06-sources.md). Solder les cases 18 et 23 (plan SQL PC, coût du fichier Pi changé) restées ouvertes après le banc synthétique du 06/10.
+
+- **Plan SQL réel de la base opencode PC** (5 709 Mio ; 2 055 sessions, 79 058 messages, 335 232 parts), lu via `src/adapter/source-db.js` en lecture seule stricte : `PRAGMA index_list('session')` = `workspace_id`, `parent_id`, `project_id`, pk `id` — **aucun index de tête `time_updated`**. `hasTimeUpdatedIndex` est donc **faux** et `adaptPaged` utilise le repli sessions `SEARCH session USING INDEX sqlite_autoindex_session_1 (id>?)` (filtre `time_updated` appliqué **après**, coût O(#sessions)). Le delta messages **scanne** : `SCAN message USING INDEX message_session_time_created_id_idx` — **O(#messages), pas O(delta)**. Aucun index créé dans la source.
+- **Coût réel du delta pi** (`refresh`, sources vivantes) : passe delta **9,528 s** pour +1 482 évt / +30 sessions / +1 576 raw (**opencode delta 0**, tout vient de pi) contre passe de contrôle **8,651 s** pour +6 évt. Le coût est **dominé par la reconstruction complète de la vue** (`refresh` enchaîne `ingest` puis `index()` = `buildView()`), pas par le delta (~0,6 ms/événement marginal, non isolé). Inventaires : `state.json` 82,4→91,0 Kio, `sessions.jsonl` 864,3→875,2 Kio, `index.db` 237,8→253,6 Mo (affichage), corpus 907→923 Mio. Aucun marqueur d'ingestion résiduel.
+- **Cases 18 et 23 cochées** le 06/10/2026 : tous leurs sous-points (plan PC consigné, scan signalé sans index source, coût pi mesuré, coûts par session/fichier et inventaires explicités) sont désormais couverts sur sources réelles. Limites conservées : durées ingest/index non séparées par la commande, cache non contrôlé, opencode delta non observé en mouvement.
+
 ## Validation PC du 01/10/2026 — A2 à A4 et bilan A5
 
 > **Bilan HISTORIQUE, code `6af37c7`** — conservé tel quel (A1 y était partiel). La validation A1 ultérieure (PRoot, verrou noyau) fait l'objet d'une section distincte plus bas.
