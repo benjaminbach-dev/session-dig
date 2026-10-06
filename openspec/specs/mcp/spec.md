@@ -1,7 +1,8 @@
 # mcp Specification
 
 ## Purpose
-TBD - created by archiving change add-mcp-server. Update Purpose after archive.
+
+Exposer l'archive des sessions AI à un assistant externe (client MCP officiel) en lecture seule, sur loopback, avec un catalogue fermé d'outils (`sdig_search`, `sdig_read`, `sdig_status`) : recherche par extraits référencés (pertinence BM25 ou exploration chronologique sans mots-clés), lecture complète par fragments et curseurs, état et fraîcheur des sources. Confidentialité et bornage par construction : aucune sortie réseau, aucun contenu privé dans les journaux, budgets explicites, erreurs à codes fermés.
 ## Requirements
 ### Requirement: Architecture et transport
 

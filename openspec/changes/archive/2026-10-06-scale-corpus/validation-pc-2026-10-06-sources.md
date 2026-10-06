@@ -5,11 +5,11 @@ trou laissé par le [bilan synthétique du même jour](validation-pc-2026-10-06.
 (« ces plans sont synthétiques […] ne remplacent pas une validation sur la base
 source réelle »). Il porte sur les **sources personnelles réelles de ce PC** :
 
-- source opencode `/home/ben/.local/share/opencode/opencode.db` (STABLE, lue en
+- source opencode `~/.local/share/opencode/opencode.db` (STABLE, lue en
   lecture seule stricte via `src/adapter/source-db.js`) ;
 - source pi `~/.pi/agent/sessions` (fichiers JSONL vivants, dont la session pi en
   cours qui a grossi depuis le 05/10) ;
-- corpus v2 `/home/ben/.local/share/session-dig` (muté uniquement par la commande
+- corpus v2 `~/.local/share/session-dig` (muté uniquement par la commande
   officielle `node bin/sdig.js refresh`).
 
 Aucun contenu de session n'est reproduit ici : uniquement plans SQL, durées,
