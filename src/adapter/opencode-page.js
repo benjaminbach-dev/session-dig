@@ -4,56 +4,58 @@
 // de lot, indépendamment de la taille de la source (la base PC réelle fait 4 Go :
 // aucune matérialisation intégrale).
 //
-// Stratégie de lecture du delta (D3) : si la source porte un index dont time_updated
-// est une colonne de tête, la pagination keyset sur (time_updated, id) est indexée —
-// coût réel O(delta). Sinon (opencode.db actuel : index (session_id, time_created, id)
-// uniquement), UNE passe en flux avec le filtre watermark dans la requête — la base
-// exécute le filtre, seule l'I/O de scan est payée, jamais de matérialisation.
+// Stratégie de lecture du delta (D3) : la PAGINATION DES SESSIONS est keyset sur
+// (time_updated, id) quand la table `session` porte un index dont time_updated est
+// la PREMIÈRE colonne clé — coût indexé pour cette table seulement. Sinon, la table
+// légère est parcourue par clé (id) par lots bornés.
+//
+// La requête des MESSAGES du delta (`ORDER BY session_id, time_created, id`) peut
+// SCANNER même si un index time_updated existe : l'ordre demandé n'est pas fourni
+// par cet index (banc du 06/10 : plan inchangé, `SCAN message USING INDEX
+// message_session_idx`). Aucune promesse d'O(delta) sur les messages : le plan
+// dépend de SQLite et du coût par plage, pas d'une intention.
+//
+// Lecture source STRICTE en lecture seule (voir `source-db.js`) : aucun repli par
+// copie temporaire db/-wal/-shm.
 // L'extraction d'un message (parts → événement canonique) reste dans
 // opencode-extract.js (point de vérité unique partagé).
-import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { extractSessionRow, extractMessage } from './opencode-extract.js'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-const Database = require('better-sqlite3')
-
-function openReadonly (dbPath) {
-  if (!fs.existsSync(dbPath)) {
-    throw new Error(`base source introuvable : ${dbPath} (lancer opencode au moins une fois, ou passer --db)`)
-  }
-  try {
-    return new Database(dbPath, { readonly: true, fileMustExist: true })
-  } catch {
-    // WAL actif (opencode en cours) : copie tripartite en tmp puis lecture de la copie.
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-src-'))
-    const copy = path.join(tmp, 'src.db')
-    for (const ext of ['', '-wal', '-shm']) {
-      const from = dbPath + ext
-      if (fs.existsSync(from)) fs.copyFileSync(from, copy + ext)
-    }
-    return new Database(copy, { readonly: true, fileMustExist: true })
-  }
-}
+import { openReadonlySource } from './source-db.js'
 
 function repoFromDirectory (directory) {
   if (!directory || directory === '/' || directory === os.homedir()) return null
   return path.basename(directory) || null
 }
 
-/** Un index source couvre-t-il time_updated en tête ? (pagination indexée du delta) */
+/**
+ * La table `session` porte-t-elle un index dont la PREMIÈRE colonne clé est
+ * `time_updated` ? Seule cette table utilise le drapeau (pagination keyset des
+ * sessions). Détection par PRAGMA, jamais par inspection de texte SQL :
+ *   - `pragma_index_list('session')` : index non partiels uniquement (un index
+ *     partiel ne couvre pas toute la table) ;
+ *   - `pragma_index_xinfo(<nom échappé>)` : première colonne clé (`key=1`, plus
+ *     petit `seqno`) — une expression ou une colonne en queue ne compte pas.
+ * Un index sur `message` n'est jamais considéré (table distincte).
+ */
 function hasTimeUpdatedIndex (db) {
-  const idx = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name IN ('session','message')").all()
-  return idx.some(r => (r.sql || '').includes('time_updated'))
+  const q = (s) => `'${String(s).replaceAll("'", "''")}'` // échappement du nom d'index
+  const idx = db.prepare("SELECT name, partial FROM pragma_index_list('session')").all()
+  for (const row of idx) {
+    if (row.partial) continue // index partiel : ne couvre pas toute la table
+    const cols = db.prepare(`SELECT seqno, name, key FROM pragma_index_xinfo(${q(row.name)})`).all()
+    const firstKey = cols.filter(c => c.key === 1).sort((a, b) => a.seqno - b.seqno)[0]
+    if (firstKey && firstKey.name === 'time_updated') return true
+  }
+  return false
 }
 
 export async function adaptPaged (dbPath, since = {}, opts = {}, onBatch) {
   const sinceMsg = since.message ?? -1
   const sinceSes = since.session ?? -1
   const batchSize = Math.max(1, opts.batchSize || 2000)
-  const db = openReadonly(dbPath)
+  const db = openReadonlySource(dbPath)
   try {
     const indexed = hasTimeUpdatedIndex(db)
 

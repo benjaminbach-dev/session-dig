@@ -1,28 +1,9 @@
 // Adaptateur opencode : opencode.db (SQLite, drizzle) → événements/sessions canoniques.
-// Lecture seule stricte (readonly) ; si la base est verrouillée par une session active
-// (WAL/shm), repli sur copie temporaire — jamais d'écriture dans la source.
-import Database from 'better-sqlite3'
-import fs from 'node:fs'
+// Lecture seule STRICTE (voir `source-db.js`) : aucun repli par copie temporaire —
+// une copie db/-wal/-shm ne garantit aucun snapshot et écrirait des fichiers.
 import path from 'node:path'
 import os from 'node:os'
-
-function openReadonly (dbPath) {
-  if (!fs.existsSync(dbPath)) {
-    throw new Error(`base source introuvable : ${dbPath} (lancer opencode au moins une fois, ou passer --db)`)
-  }
-  try {
-    return new Database(dbPath, { readonly: true, fileMustExist: true })
-  } catch (e) {
-    // WAL actif (opencode en cours) : copie tripartite en tmp puis lecture de la copie.
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sdig-src-'))
-    const copy = path.join(tmp, 'src.db')
-    for (const ext of ['', '-wal', '-shm']) {
-      const from = dbPath + ext
-      if (fs.existsSync(from)) fs.copyFileSync(from, copy + ext)
-    }
-    return new Database(copy, { readonly: true, fileMustExist: true })
-  }
-}
+import { openReadonlySource } from './source-db.js'
 
 function repoFromDirectory (directory) {
   if (!directory || directory === '/' || directory === os.homedir()) return null
@@ -100,7 +81,7 @@ function rawContentFrom (state) {
 export function adapt (dbPath, since = {}) {
   const sinceMsg = since.message ?? -1
   const sinceSes = since.session ?? -1
-  const db = openReadonly(dbPath)
+  const db = openReadonlySource(dbPath)
   try {
     const sessions = []
     const events = []
