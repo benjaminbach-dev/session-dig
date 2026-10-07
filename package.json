@@ -1,6 +1,6 @@
 {
   "name": "session-dig",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Archéologie de sessions AI : corpus JSONL canonique multi-sources + recherche BM25 (FTS5), extensible vers embeddings et stats de modèles.",
   "type": "module",
   "private": true,
@@ -8,6 +8,27 @@
   "bin": {
     "sdig": "./bin/sdig.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benjaminbach-dev/session-dig.git"
+  },
+  "keywords": [
+    "opencode",
+    "pi",
+    "ai-sessions",
+    "bm25",
+    "fts5",
+    "mcp",
+    "search",
+    "archive"
+  ],
   "scripts": {
     "test": "node --test 'test/*.test.js'",
     "eval": "node scripts/eval.mjs",

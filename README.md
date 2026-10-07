@@ -22,15 +22,31 @@ sessions/*.jsonl          state.json (layoutVersion: 2,   └─ fusion RRF ─�
 
 ## Statut
 
-**État actuel — 06/10/2026 :** lecture CLI en flux avec snapshot et backpressure ; banc réellement rendu, mesuré jusqu'à **500 000 événements** ; outils naturels compatibles avec la vue v2 ; adaptateurs opencode sans copie de repli et détection d'index corrigée. Validation finale : **645/645 tests**, OpenSpec **8/8**. Revues principales et Advisor effectuées ; aucune source personnelle ni jeu naturel gelé utilisé dans cette passe.
+**État actuel — 06/10/2026 (clôture du jalon « usage solo local validé sur PC ») :** corpus v2 multi-source (opencode + pi) à jour, lecture CLI en flux, tri chronologique et exploration sans mots-clés, serveur MCP local (`sdig_search`/`sdig_read`/`sdig_status`, avec chrono). **J-MCP atteint** le 06/10 : banc d'usage hermétique re-joué après l'évolution chrono, **10/10**. Validation finale : **645/645 tests**, `npm run eval` exit 0, OpenSpec strict **4/4**. Les cinq changes actifs (add-pi-adapter, add-cli-chronological-sort, add-mcp-server, add-mcp-chrono, scale-corpus) sont clôturés et archivés le 06/10 — `openspec/changes/` est vide, les specs consolidées vivent dans `openspec/specs/`.
 
-Le banc relève **468 Mio** de pic RSS cumulatif et **536 ms p95** de recherche rendue à 500k : la cible de 100 ms **n'est pas atteinte**. [Méthode et mesures](openspec/changes/scale-corpus/validation-pc-2026-10-06.md) · [reprise et restes ouverts](openspec/changes/scale-corpus/progress.md#reprise-opérationnelle). Aucun change clos/archivé et aucun J-MCP plein déclaré.
+Performance **arbitrée et acceptée** (usage solo) : p95 CLI ~136 ms / MCP ~66 ms sur corpus réel ; 536 ms p95 à 500 000 événements au banc synthétique (cible initiale 100 ms non contraignante, écart documenté et assumé). [Méthode et mesures](openspec/changes/archive/2026-10-06-scale-corpus/validation-pc-2026-10-06.md) · [bilan sources réelles](openspec/changes/archive/2026-10-06-scale-corpus/validation-pc-2026-10-06-sources.md) · [clôture](openspec/changes/archive/2026-10-06-scale-corpus/progress.md).
+
+## Installation
+
+Le paquet n'est **pas publié sur npm** (`private: true` dans `package.json` — garde-fou contre une publication accidentelle ; l'enlever le jour voulu). Installation depuis le dépôt Git :
+
+```sh
+npm install -g github:benjaminbach-dev/session-dig   # installe la commande sdig globalement
+# ou, sans installation permanente :
+npx github:benjaminbach-dev/session-dig status
+```
+
+Alternatives : `npm pack` dans un clone puis `npm i -g session-dig-1.0.0.tgz` (paquet auto-contenu, testé), ou simplement `node bin/sdig.js …` depuis le clone.
+
+**Prérequis :** Node ≥ 20. Dépendance native `better-sqlite3` : **binaires précompilés inclus dans le paquet** (linux x64/arm64 et musl, macOS, Windows) — aucune compilation sur plateformes standard ; le cas Termux/Android peut encore exiger une compilation locale (python, make, clang).
+
+**Données :** le corpus vit dans `~/.local/share/session-dig` (seul répertoire écrit) ; les sources — `~/.local/share/opencode/opencode.db` et `~/.pi/agent/sessions` — sont **lues en lecture seule stricte**. Rien d'autre n'est touché ; `sdig status` décrit l'état sans rien modifier.
 
 **Historique des versions :** les chiffres et restes ci-dessous décrivent leurs passes datées, pas l'état actuel.
 
-**v0.7 : adaptateur pi + corpus fusionné — implémentée.** Deux sources dans une seule passe de publication (protocole marqueur/staging/renames/COMMIT/state inchangé) ; état `state.json` multi-source (migration de la forme plate au premier COMMIT, watermarks opencode conservés) ; jetons de fraîcheur par source (pi : md5 des fichiers suivis — toute divergence vue/état ⇒ reconstruction depuis les shards, lecture refusée entre-temps) ; `--source all|opencode|pi` et `--pi-dir` sur ingest/refresh, filtre de provenance sur la recherche et le scan `--raw` ; `sdig read pi:<sessionId>` avec l'id préfixé ; ids d'événement et de preuve **qualifiés par session** (`pi:<sessionId>:<id>` — fork/reprise rejouent les ids de lignes) ; partIds pi validés avant toute dérivation de chemin. **208 tests passent.** Restent ouverts : les limites scale-corpus ci-dessous ; les suppositions D7 (bash imbriqués, `cancelled`, sous-agents) à épingler sur sessions riches ; banc inchangé. Détail : [design](openspec/changes/add-pi-adapter/design.md).
+**v0.7 : adaptateur pi + corpus fusionné — implémentée.** Deux sources dans une seule passe de publication (protocole marqueur/staging/renames/COMMIT/state inchangé) ; état `state.json` multi-source (migration de la forme plate au premier COMMIT, watermarks opencode conservés) ; jetons de fraîcheur par source (pi : md5 des fichiers suivis — toute divergence vue/état ⇒ reconstruction depuis les shards, lecture refusée entre-temps) ; `--source all|opencode|pi` et `--pi-dir` sur ingest/refresh, filtre de provenance sur la recherche et le scan `--raw` ; `sdig read pi:<sessionId>` avec l'id préfixé ; ids d'événement et de preuve **qualifiés par session** (`pi:<sessionId>:<id>` — fork/reprise rejouent les ids de lignes) ; partIds pi validés avant toute dérivation de chemin. **208 tests passent.** Restent ouverts : les limites scale-corpus ci-dessous ; les suppositions D7 (bash imbriqués, `cancelled`, sous-agents) à épingler sur sessions riches ; banc inchangé. Détail : [design](openspec/changes/archive/2026-10-06-add-pi-adapter/design.md).
 
-**v0.6 : implémentée, passe corrective en cours — scaling non encore validé.** Layout v2 shardé par condensat md5, vue SQLite reconstruisable en chemin de lecture, fenêtres par clé et transaction de lecture ; protocole marqueur/staging/publication, migration sans source et empreinte sur les octets. Les lots courts CLI/contexte/scanner et réparation FTS sont corrigés ; **51 tests ciblés passent**. Restent notamment verrouillage concurrent, mémoire/coûts résiduels, banc fidèle et validation sur machine cible. État détaillé et reprise : [progress.md](openspec/changes/scale-corpus/progress.md), [tâches](openspec/changes/scale-corpus/tasks.md). Aucun changement du corpus réel pendant cette passe corrective.
+**v0.6 : implémentée, passe corrective en cours — scaling non encore validé.** Layout v2 shardé par condensat md5, vue SQLite reconstruisable en chemin de lecture, fenêtres par clé et transaction de lecture ; protocole marqueur/staging/publication, migration sans source et empreinte sur les octets. Les lots courts CLI/contexte/scanner et réparation FTS sont corrigés ; **51 tests ciblés passent**. Restent notamment verrouillage concurrent, mémoire/coûts résiduels, banc fidèle et validation sur machine cible. État détaillé et reprise : [progress.md](openspec/changes/archive/2026-10-06-scale-corpus/progress.md), [tâches](openspec/changes/archive/2026-10-06-scale-corpus/tasks.md). Aucun changement du corpus réel pendant cette passe corrective.
 
 **v0 implémentée le 16/09** (SDD : specs écrites avant le code, puis patchées aux points constatés à l'implémentation). Specs : `openspec/specs/` — [`corpus`](openspec/specs/corpus/spec.md), [`search`](openspec/specs/search/spec.md) · Plan détaillé : [`openspec/implementation-plan.md`](openspec/implementation-plan.md).
 
@@ -142,8 +158,8 @@ seul Zod strict ne suffit pas à garantir l'absence d'écho. **Traité en M1b** 
 `tools/call` passe par une couche de validation propre (SDK bas niveau), et le
 résultat d'erreur ne porte pas de `structuredContent`.
 
-Détails de conception : [design add-mcp-server](openspec/changes/add-mcp-server/design.md)
-(D2/D3/D7/D8/D10) ; état d'avancement : [tasks](openspec/changes/add-mcp-server/tasks.md).
+Détails de conception : [design add-mcp-server](openspec/changes/archive/2026-10-06-add-mcp-server/design.md)
+(D2/D3/D7/D8/D10) ; état d'avancement : [tasks](openspec/changes/archive/2026-10-06-add-mcp-server/tasks.md).
 
 ## MCP — lot M1b livré (transport HTTP, garde-fous, admission ; 01/10/2026)
 
@@ -269,16 +285,11 @@ Guide complet : [docs/mcp.md](docs/mcp.md).
   privée, éval gelée (décision de clôture du principal ; lot B de scale-corpus
   restant : rebuild réel, mesures). La validation PC a eu lieu le 05/10/2026 :
   client MCP réel sur corpus réel, recollement par hash, intégrité vérifiée —
-  [bilan](openspec/changes/scale-corpus/validation-pc-2026-10-05.md).
+  [bilan](openspec/changes/archive/2026-10-06-scale-corpus/validation-pc-2026-10-05.md).
 
 ## Roadmap
 
-**Prochain jalon, recentré à la demande explicite de l'utilisateur : usage solo local validé sur PC.**
-1. Valider les prérequis d'intégrité/reprise et d'exclusion des écrivains avant usage sur corpus réel.
-2. Tester ingestion et recherche CLI sur PC, puis un MCP minimal `search`/`read`/`status` : recherche top-k sans curseur, lecture complète par fragments, confidentialité dès le départ. Un seul travail actif, sans timeout applicatif garanti.
-3. Optimiser selon les mesures ; raw MCP, pagination search, parallélisme et timeout strict restent des extensions possibles sur accord. Les bancs étendus ne bloquent pas le premier jalon ; aucun change n'est automatiquement déclaré terminé.
-
-Détails : [jalon et validation PC](openspec/changes/scale-corpus/proposal.md), [tâches MCP](openspec/changes/add-mcp-server/tasks.md). Ce recentrage modifie les specs, pas le code déjà livré.
+**Jalon « usage solo local validé sur PC » atteint et clôturé le 06/10/2026** (détails : [clôture scale-corpus](openspec/changes/archive/2026-10-06-scale-corpus/progress.md)). Les extensions conditionnées (pagination search, raw MCP, timeout/concurrence, supervision) sont reportées avec décision datée dans les tasks archivées ; les embeddings/fusion RRF restent conditionnés à un manque lexical démontré par l'évaluation.
 
 | Phase | Contenu | Statut |
 |-------|---------|--------|
@@ -288,10 +299,11 @@ Détails : [jalon et validation PC](openspec/changes/scale-corpus/proposal.md), 
 | v0.3 | **jamais de coupure silencieuse** (analyse du 1er passage du jeu naturel, 19/09) : marqueur de troncation (compteurs + chemin), `--full`/`--chars N`, `--json` intégral + 2 questions brûlées en régression | ✅ fait |
 | v0.4 | **évaluation traçable** (20/09) : audit déterministe des accès (`scripts/audit-toolcalls.mjs`, motifs épinglés, « à examiner », statut « audit incomplet ») + grille de notation de l'éval naturelle | ✅ fait |
 | v0.5 | **ancrage temporel** (20/09) : `sdig read --at <ancre>` masque les messages postérieurs à l'instant demandé — ancre affichée, marqueur explicite, `--json` (ancre + compte) | ✅ fait |
-| v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication transactionnelle de la vue et reprise des shards, migration sans source | implémentée, passe corrective en cours ([progress](openspec/changes/scale-corpus/progress.md)) |
+| v0.6 | **scaling** : layout v2 shardé par condensat, vue reconstruisable en chemin de lecture, publication transactionnelle de la vue et reprise des shards, migration sans source | ✅ clôturé le 06/10 ([progress](openspec/changes/archive/2026-10-06-scale-corpus/progress.md)) |
 | v0.7 | **corpus fusionné** : adaptateur pi (JSONL append-only), état multi-source + jetons de fraîcheur par source, `--source`/`--pi-dir`, filtre de provenance (`--source`, `--json`), partIds pi validés, orphelines signalées | ✅ fait |
-| v0.8 | **tri chronologique CLI** (02/10) : `--sort relevance|oldest|newest` (défaut `relevance` inchangé), sélection globale `(ts, id BINARY)` avant `--limit`, mode sans mots-clés user/assistant, JSON tableau + avertissement modèle sur `stderr` | ✅ implémenté (fixtures) ; PC non revendiqué |
-| v1 | MCP local lecture seule : `search` top-k, `read` complet par fragments, `status` — périmètre solo ci-dessus | **implémenté localement (fixtures)** ; validation PC et jalon J-MCP à faire |
+| v0.8 | **tri chronologique CLI** (02/10) : `--sort relevance|oldest|newest` (défaut `relevance` inchangé), sélection globale `(ts, id BINARY)` avant `--limit`, mode sans mots-clés user/assistant, JSON tableau + avertissement modèle sur `stderr` | ✅ validé (tests + PC) |
+| v0.9 | **tri chronologique + exploration MCP** (06/10) : `sdig_search` accepte `sort: oldest\|newest` et `query` omise (exploration filtrée), extraits bornés SQL, `score: null` en exploration | ✅ validé (banc hermétique 10/10) |
+| v1 | MCP local lecture seule : `search` top-k, `read` complet par fragments, `status` — périmètre solo ci-dessus | ✅ **J-MCP atteint le 06/10** (banc 10/10, validation PC) |
 | v2 | embeddings + fusion RRF — **activés seulement si l'évaluation montre un manque lexical** | conditionné |
 | v3 | `sstats` : comparaison de modèles (coût, tokens ; exitCode = signal brut, pas une note) | à venir |
 
