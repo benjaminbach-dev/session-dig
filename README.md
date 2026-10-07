@@ -40,7 +40,36 @@ Alternatives : `npm pack` dans un clone puis `npm i -g session-dig-1.0.0.tgz` (p
 
 **Prérequis :** Node ≥ 20. Dépendance native `better-sqlite3` : **binaires précompilés inclus dans le paquet** (linux x64/arm64 et musl, macOS, Windows) — aucune compilation sur plateformes standard ; le cas Termux/Android peut encore exiger une compilation locale (python, make, clang).
 
-**Données :** le corpus vit dans `~/.local/share/session-dig` (seul répertoire écrit) ; les sources — `~/.local/share/opencode/opencode.db` et `~/.pi/agent/sessions` — sont **lues en lecture seule stricte**. Rien d'autre n'est touché ; `sdig status` décrit l'état sans rien modifier.
+**Données :** le corpus vit dans `~/.local/share/session-dig` (seul répertoire écrit — indépendant du mode d'installation, machine et utilisateur locaux ; surchargeable par `SESSION_DIG_HOME` ou `--home`) ; les sources — `~/.local/share/opencode/opencode.db` et `~/.pi/agent/sessions` — sont **lues en lecture seule stricte**. Rien d'autre n'est touché ; `sdig status` décrit l'état sans rien modifier.
+
+## Utiliser le serveur MCP dans un projet
+
+Le serveur expose `sdig_search` / `sdig_read` / `sdig_status` en lecture seule sur **Streamable HTTP**, `127.0.0.1:18767/mcp` uniquement — [détail complet](docs/mcp.md).
+
+**1. Lancer le serveur AVANT d'ouvrir le projet** (le client MCP se connecte au lancement de sa session — un serveur démarré après coup n'est pas vu) :
+
+```sh
+sdig mcp                        # ou : node bin/sdig.js mcp
+# jeton optionnel (exiger une auth) : SESSION_DIG_MCP_TOKEN=… sdig mcp
+```
+
+Arrêt : Ctrl-C. **Aucun autostart ni supervision** (décision de spec : le corpus contient tout ton historique — un service permanent implicitement interrogeable a été écarté ; voir `docs/mcp.md`).
+
+**2. Déclarer le serveur dans le client** — pour un projet pi, `.pi/mcp.json` à la racine :
+
+```json
+{
+  "mcpServers": {
+    "sdig": { "url": "http://127.0.0.1:18767/mcp", "exposure": "direct", "enabled": true }
+  }
+}
+```
+
+Tout client MCP acceptant un serveur Streamable HTTP pointe sur la même URL (+ jeton si défini). Pour un agent pi restreint à l'archive, voir l'exemple `.pi/agents/hermetic-sdig.md` du dépôt (trois outils sdig uniquement, contournement interdit).
+
+**3. Rafraîchir avant de chercher du récent** : le serveur ne lit que la vue publiée — `sdig refresh` (~9 s) après une séance de travail, sinon l'assistant cherche sur l'état précédent.
+
+**Confidentialité :** ce que l'assistant lit dans l'archive part vers le fournisseur de son modèle — aucun filtrage ni anonymisation n'est promis (limites détaillées dans `docs/mcp.md`).
 
 **Historique des versions :** les chiffres et restes ci-dessous décrivent leurs passes datées, pas l'état actuel.
 
